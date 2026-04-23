@@ -1,6 +1,7 @@
 #Baixar canvis del company	git pull
 #Enviar el teu codi al núvol	git add . + git commit -m "..." + git push
 #Executar el puzzle	pixi run python src/puzzle.py
+ll
 
 <p align="center">
   <img src="img/klotski.jpg" alt="Klotski!">

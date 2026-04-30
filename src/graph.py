@@ -9,7 +9,8 @@ L'exploració es fa amb DFS des de l'estat inicial.
 El graf es desa en format .graphml per poder-lo carregar amb altres eines.
  
 Ús:
-    python src/graph.py <puzzle.json> [output.graphml]
+    pixi run python src/graph.py puzzles/sample1.json (genera el .graphml de sample1.json)
+    pixi run python src/3D_view.py puzzles/sample1.graphml (visualitzar el graf de sample1)
 """
  
 from __future__ import annotations
@@ -28,9 +29,19 @@ StateKey = tuple[tuple[int, int], ...]
  
  
 def state_key(puzzle: Puzzle, state: State) -> StateKey:
-    """Retorna una clau única i hashable per a un estat."""
-    return state.positions
- 
+    """ Agrupa les peces per forma i ordena les posicions dins de cada grup. """
+    positions = list(state.positions)
+    result = []
+    i = 0
+    while i < len(puzzle.pieces):
+        j = i + 1
+        while j < len(puzzle.pieces) and puzzle.pieces[j] == puzzle.pieces[i]:
+            j += 1
+        # Les peces i..j-1 tenen la mateixa forma, ordenem les seves posicions
+        group = sorted(positions[i:j])
+        result.extend(group)
+        i = j
+    return tuple(result)
  
 def build_graph(puzzle: Puzzle) -> gt.Graph:
     """
@@ -67,8 +78,10 @@ def build_graph(puzzle: Puzzle) -> gt.Graph:
     # DFS iteratiu des de l'estat inicial
     stack: list[State] = [puzzle.start]
     get_or_create_vertex(puzzle.start)
- 
+    i = 1
     while stack:
+        print(i)
+        i += 1
         current_state = stack.pop()
         current_v = visited[state_key(puzzle, current_state)]
  

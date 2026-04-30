@@ -86,7 +86,7 @@ def build_graph(puzzle: Puzzle) -> gt.Graph:
             next_state = apply_move(puzzle, current_state, move)
             next_v, is_new = get_or_create_vertex(next_state)
  
-            # Afegim l'aresta existeixi o no, per les característiques del problema no és trascendent
+            # Afegim l'aresta existeixi o no, per les característiques del problema no és trascendent. Perquè al final, el que buscarem són camins curts fins a la solució amb un BFS, si hi ha alguna aresta de més, és igual, perquè amb aquesta modificació guanyem molta eficiència.
             g.add_edge(current_v, next_v)
  
             # Si l'estat és nou, l'afegim a la pila per explorar-lo

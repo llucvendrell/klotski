@@ -78,10 +78,7 @@ def build_graph(puzzle: Puzzle) -> gt.Graph:
     # DFS iteratiu des de l'estat inicial
     stack: list[State] = [puzzle.start]
     get_or_create_vertex(puzzle.start)
-    i = 1
     while stack:
-        print(i)
-        i += 1
         current_state = stack.pop()
         current_v = visited[state_key(puzzle, current_state)]
  
@@ -89,9 +86,8 @@ def build_graph(puzzle: Puzzle) -> gt.Graph:
             next_state = apply_move(puzzle, current_state, move)
             next_v, is_new = get_or_create_vertex(next_state)
  
-            # Afegim l'aresta si no existeix ja
-            if g.edge(current_v, next_v) is None:
-                g.add_edge(current_v, next_v)
+            # Afegim l'aresta existeixi o no, per les característiques del problema no és trascendent
+            g.add_edge(current_v, next_v)
  
             # Si l'estat és nou, l'afegim a la pila per explorar-lo
             if is_new:

@@ -9,7 +9,7 @@ L'exploració es fa amb DFS des de l'estat inicial.
 El graf es desa en format .graphml per poder-lo carregar amb altres eines.
  
 Ús:
-    pixi run python src/graph.py puzzles/sample1.json (genera el .graphml de sample1.json)
+    pixi run python src/graph_eficient.py puzzles/sample1.json (genera el .graphml de sample1.json)
     pixi run python src/3D_view.py puzzles/sample1.graphml (visualitzar el graf de sample1)
 """
  
@@ -28,10 +28,23 @@ from puzzle import Puzzle, State
 StateKey = tuple[tuple[int, int], ...]
  
  
-def state_key(puzzle: Puzzle, state: State | str) -> StateKey:
+def state_key(_puzzle: Puzzle, state: State | str) -> StateKey:
     if isinstance(state, str):
-        return tuple(tuple(p) for p in json.loads(state))
-    return state.positions
+        positions = [tuple(p) for p in json.loads(state)]
+    else:
+        positions = list(state.positions)
+    
+    # Agrupa peces per forma i ordena posicions dins de cada grup
+    result = []
+    i = 0
+    while i < len(_puzzle.pieces):
+        j = i + 1
+        while j < len(_puzzle.pieces) and _puzzle.pieces[j] == _puzzle.pieces[i]:
+            j += 1
+        group = sorted(positions[i:j])
+        result.extend(group)
+        i = j
+    return tuple(result)
  
 def build_graph(puzzle: Puzzle) -> gt.Graph:
     """
@@ -59,7 +72,7 @@ def build_graph(puzzle: Puzzle) -> gt.Graph:
         if key in visited:
             return visited[key], False
         v = g.add_vertex()
-        state_prop[v] = json.dumps([list(p) for p in state.positions])
+        state_prop[v] = json.dumps([list(p) for p in key])
         is_start_prop[v] = (state == puzzle.start)
         is_goal_prop[v] = is_goal(puzzle, state)
         visited[key] = v
@@ -113,4 +126,3 @@ if __name__ == "__main__":
  
     g.save(str(out_path))
     print(f"Graf desat: {out_path}")
-    

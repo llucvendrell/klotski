@@ -10,8 +10,11 @@ from __future__ import annotations
  
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
+ 
+from puzzle import Puzzle
  
 BASE_URL = "https://klotski.pauek.dev/api"
 PUZZLES_DIR = Path("puzzles")
@@ -40,19 +43,28 @@ def save_puzzle(puzzle_id: str, puzzle: dict) -> Path:
  
  
 def download_one(puzzle_id: str) -> None:
-    """Descarrega i desa un puzzle concret."""
-    print(f"Descarregant {puzzle_id[:8]}...")
-    puzzle = get_puzzle(puzzle_id)
-    path = save_puzzle(puzzle_id, puzzle)
-    print(f"Desat: {path}")
+    """Descarrega, valida i desa un puzzle concret."""
+    short_id = puzzle_id[:8]
+    try:
+        puzzle_dict = get_puzzle(puzzle_id)
+        Puzzle.from_json(json.dumps(puzzle_dict))  # validem que el JSON és correcte
+        path = save_puzzle(puzzle_id, puzzle_dict)
+        print(f"  [✓] {short_id}  →  {path}")
+    except urllib.error.HTTPError as e:
+        print(f"  [✗] {short_id}: error HTTP {e.code}", file=sys.stderr)
+    except urllib.error.URLError as e:
+        print(f"  [✗] {short_id}: error de connexió ({e.reason})", file=sys.stderr)
+    except Exception as e:
+        print(f"  [✗] {short_id}: {e}", file=sys.stderr)
  
  
 def download_all() -> None:
     """Descarrega tots els puzzles disponibles al repositori."""
     print("Obtenint llista de puzzles...")
     ids = get_ids()
-    print(f"Trobats {len(ids)} puzzles")
-    for puzzle_id in ids:
+    print(f"Trobats {len(ids)} puzzles\n")
+    for i, puzzle_id in enumerate(ids, start=1):
+        print(f"[{i:3}/{len(ids)}]", end=" ")
         download_one(puzzle_id)
  
  

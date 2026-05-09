@@ -5,7 +5,7 @@ L'avaluació combina cinc mesures estructurals del graf d'estats i dues penalitz
 
   Mesures (contribucions positives):
     M1 · Longitud del camí mínim       — dificultat directa
-    M2 · Grau mitjà dels nodes         — nombre mitjà de moviments possibles per estat
+    M2 · Entropia del grau dels nodes  — riquesa estructural del graf
     M3 · Modularitat de comunitats     — presència de zones i fases
     M4 · Excentricitat mostrejada      — posició real de l'inici al graf
     M5 · Dificultat ponderada dels goals — penalitza goals abundants i propers
@@ -21,7 +21,6 @@ L'avaluació combina cinc mesures estructurals del graf d'estats i dues penalitz
 
 Ús:
     pixi run python src/eval.py puzzles/sample1.json
-    pixi run python src/eval.py puzzles/sample1.graphml
     pixi run python src/eval.py puzzles/sample1.json --verbose
 """
 
@@ -45,7 +44,7 @@ from solve import solve
 # ── Pesos de les cinc mesures (han de sumar 1.0) ──────────────────────────────
 
 W_PATH         = 0.30
-W_AVG_DEGREE   = 0.20
+W_ENTROPY      = 0.20
 W_MODULARITY   = 0.20
 W_ECCENTRICITY = 0.15
 W_GOAL_DIFF    = 0.15
@@ -62,7 +61,6 @@ REF_PATH_LEN      = 50     # moviments de referència per M1
 MIN_PATH_LEN      = 15     # per sota d'aquí el puzzle és trivial
 DIAM_SAMPLE_SIZE  = 200    # nodes a mostrejar per estimar el diàmetre (M4)
 GOAL_SAMPLE_SIZE  = 100    # goals a mostrejar per M5 (evita O(n) shortest_paths)
-REF_AVG_DEGREE    = 10     # grau mitjà de referència per M2
 
 
 # ── Mesures individuals ───────────────────────────────────────────────────────
@@ -84,22 +82,28 @@ def measure_path_length(path_len: int) -> float:
     return base
 
 
-def measure_avg_degree(g: gt.Graph) -> float:
+def measure_entropy(g: gt.Graph) -> float:
     """
-    M2 · Grau mitjà dels nodes normalitzat a [0, 1].
+    M2 · Entropia de Shannon de la distribució de graus [0, 1].
 
-    Mesura quants moviments possibles hi ha de mitjana a cada estat.
-    Com més alt, més opcions té el jugador en cada moment i més difícil
-    és trobar el camí correcte entre totes les possibilitats.
-
-    Normalitzem respecte a REF_AVG_DEGREE: un graf amb grau mitjà igual
-    o superior a REF_AVG_DEGREE obté puntuació màxima.
+    Mesura la variació estructural: un graf amb nodes molt connectats
+    barrejats amb callejons sense sortida és més ric i enganyós.
     """
     n = g.num_vertices()
     if n <= 1:
         return 0.0
-    avg = sum(v.out_degree() for v in g.vertices()) / n
-    return min(avg / REF_AVG_DEGREE, 1.0)
+
+    freq: dict[int, int] = {}
+    for v in g.vertices():
+        d = v.out_degree()
+        freq[d] = freq.get(d, 0) + 1
+
+    entropy = sum(
+        -(c / n) * math.log2(c / n)
+        for c in freq.values()
+    )
+    max_entropy = math.log2(n)
+    return entropy / max_entropy if max_entropy > 0 else 0.0
 
 
 def measure_modularity(g: gt.Graph) -> float:
@@ -135,6 +139,7 @@ def measure_eccentricity(g: gt.Graph, start_v: gt.Vertex) -> float:
         return 0.0
     ecc_start = max(finite)
 
+    # Estimació del diàmetre per mostreig
     all_vertices = list(g.vertices())
     sample = random.sample(
         all_vertices,
@@ -173,6 +178,7 @@ def measure_goal_difficulty(
     if not goal_vertices or path_len == 0:
         return 0.0
 
+    # Mostregem per eficiència si hi ha molts goals
     sample = (
         random.sample(goal_vertices, GOAL_SAMPLE_SIZE)
         if len(goal_vertices) > GOAL_SAMPLE_SIZE
@@ -189,6 +195,12 @@ def measure_goal_difficulty(
         return 0.0
 
     avg_fraction = sum(fractions) / len(fractions)
+
+    # Factor d'escassetat: decau com 1 / log2(n_goals + 1)
+    # 1 goal  → factor 1.00
+    # 10 goals → factor 0.29
+    # 100 goals → factor 0.15
+    # 2412 goals → factor 0.09
     scarcity = 1.0 / math.log2(len(goal_vertices) + 1)
 
     return avg_fraction * scarcity
@@ -259,12 +271,12 @@ def strict_scale(score: float) -> float:
 # ── Avaluació global ──────────────────────────────────────────────────────────
 
 
-def evaluate(puzzle: Puzzle, g: gt.Graph, verbose: bool = False) -> float:
+def evaluate(puzzle: Puzzle, verbose: bool = False) -> float:
     """
-    Donat un puzzle i el seu graf, calcula les cinc mesures i les dues
-    penalitzacions, aplica l'escala estricta i retorna una puntuació de
-    0 a 5 estrelles.
+    Construeix el graf, calcula les cinc mesures i les dues penalitzacions,
+    aplica l'escala estricta i retorna una puntuació de 0 a 5 estrelles.
     """
+    g = build_graph(puzzle)
     moves = solve(g, puzzle)
 
     n_nodes  = g.num_vertices()
@@ -289,17 +301,17 @@ def evaluate(puzzle: Puzzle, g: gt.Graph, verbose: bool = False) -> float:
     n_goals = len(goal_vertices)
 
     # ── Cinc mesures ──────────────────────────────────────────────────
-    m_path   = measure_path_length(path_len)
-    m_degree = measure_avg_degree(g)
-    m_modul  = measure_modularity(g)
-    m_ecc    = measure_eccentricity(g, start_v)
-    m_gdiff  = measure_goal_difficulty(g, start_v, goal_vertices, path_len)
+    m_path  = measure_path_length(path_len)
+    m_ent   = measure_entropy(g)
+    m_modul = measure_modularity(g)
+    m_ecc   = measure_eccentricity(g, start_v)
+    m_gdiff = measure_goal_difficulty(g, start_v, goal_vertices, path_len)
 
     score_raw = (
-        W_PATH         * m_path   +
-        W_AVG_DEGREE   * m_degree +
-        W_MODULARITY   * m_modul  +
-        W_ECCENTRICITY * m_ecc    +
+        W_PATH         * m_path  +
+        W_ENTROPY      * m_ent   +
+        W_MODULARITY   * m_modul +
+        W_ECCENTRICITY * m_ecc   +
         W_GOAL_DIFF    * m_gdiff
     )
 
@@ -327,7 +339,7 @@ def evaluate(puzzle: Puzzle, g: gt.Graph, verbose: bool = False) -> float:
     if verbose:
         _print_report(
             n_nodes, n_edges, n_goals, path_len,
-            m_path, m_degree, m_modul, m_ecc, m_gdiff,
+            m_path, m_ent, m_modul, m_ecc, m_gdiff,
             pen_linear, pen_near_goal,
             score_raw, score_penalized, stars,
         )
@@ -337,7 +349,7 @@ def evaluate(puzzle: Puzzle, g: gt.Graph, verbose: bool = False) -> float:
 
 def _print_report(
     n_nodes, n_edges, n_goals, path_len,
-    m_path, m_degree, m_modul, m_ecc, m_gdiff,
+    m_path, m_ent, m_modul, m_ecc, m_gdiff,
     pen_linear, pen_near_goal,
     score_raw, score_penalized, stars,
 ) -> None:
@@ -349,7 +361,7 @@ def _print_report(
     print(f"  Longitud camí mínim   : {path_len} moviments")
     print("─" * 52)
     print(f"  M1 longitud camí      : {m_path:.3f}  (pes {W_PATH:.0%})")
-    print(f"  M2 grau mitjà nodes   : {m_degree:.3f}  (pes {W_AVG_DEGREE:.0%})")
+    print(f"  M2 entropia graus     : {m_ent:.3f}  (pes {W_ENTROPY:.0%})")
     print(f"  M3 modularitat        : {m_modul:.3f}  (pes {W_MODULARITY:.0%})")
     print(f"  M4 excentricitat inici: {m_ecc:.3f}  (pes {W_ECCENTRICITY:.0%})")
     print(f"  M5 dificultat goals   : {m_gdiff:.3f}  (pes {W_GOAL_DIFF:.0%})")
@@ -373,7 +385,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Avalua l'interès d'un puzzle de peces lliscants (0–5 estrelles)"
     )
-    parser.add_argument("puzzle", type=Path, help="Fitxer .json o .graphml del puzzle")
+    parser.add_argument("puzzle", type=Path, help="Fitxer .json del puzzle")
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -385,18 +397,10 @@ if __name__ == "__main__":
         print(f"Error: no s'ha trobat {args.puzzle}", file=sys.stderr)
         sys.exit(1)
 
-    # Carreguem el graf i el puzzle segons l'extensió del fitxer
-    if args.puzzle.suffix == ".graphml":
-        print(f"Carregant graf '{args.puzzle.stem}'...")
-        g = gt.load_graph(str(args.puzzle))
-        puzzle = Puzzle.from_json(g.gp["puzzle"])
-    else:
-        puzzle = Puzzle.from_json(args.puzzle.read_text())
-        print(f"Construint graf de '{args.puzzle.stem}'...")
-        g = build_graph(puzzle)
-
+    puzzle = Puzzle.from_json(args.puzzle.read_text())
     print(f"Avaluant '{args.puzzle.stem}'...")
-    stars = evaluate(puzzle, g, verbose=args.verbose)
+
+    stars = evaluate(puzzle, verbose=args.verbose)
 
     if not args.verbose:
         print(f"★ Puntuació: {stars:.2f} / 5.00")

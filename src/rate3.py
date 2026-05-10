@@ -1,17 +1,17 @@
 """
 Envia la valoració d'un puzzle al repositori compartit.
 
-Usa eval.py propi: evaluate(puzzle, g, verbose).
-Prioritza .graphml si existeix (més ràpid); si no, construeix el graf.
+Usa eval3.py del company: evaluate(puzzle, g, verbose).
+Accepta .json (construeix el graf) o .graphml (carrega directament).
 
 El token d'autenticació es llegeix de la variable d'entorn KLOTSKI_TOKEN
 o d'un fitxer .token al directori arrel del projecte.
 
 Ús:
-    python src/rate.py <id>               # avalua i envia la valoració
-    python src/rate.py <id> --dry-run     # avalua però no envia
-    python src/rate.py <id> --verbose     # mostra detall de les mesures
-    python src/rate.py --all              # avalua i envia tots els puzzles
+    python src/rate3.py <id>              # avalua i envia la valoració
+    python src/rate3.py <id> --dry-run    # avalua però no envia
+    python src/rate3.py <id> --verbose    # mostra detall de les mesures
+    python src/rate3.py --all             # avalua i envia tots els puzzles
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import graph_tool.all as gt  # type: ignore[import-untyped]
 
-from eval import evaluate
+from eval3 import evaluate
 from graph import build_graph
 from puzzle import Puzzle
 
@@ -61,16 +61,15 @@ def load_token() -> str:
     sys.exit(1)
 
 
-# ── Càrrega del puzzle i el graf ─────────────────────────────────────────────
+# ── Càrrega del puzzle i el graf ──────────────────────────────────────────────
 
 
-def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | None:
+def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph] | None:
     """
-    Carrega el puzzle i opcionalment el graf a partir de l'ID.
+    Carrega el puzzle i el seu graf a partir de l'ID.
 
-    Prioritza el .graphml si existeix: en aquest cas retorna el graf ja
-    construït i evaluate no l'ha de reconstruir. Si només hi ha .json,
-    retorna el graf com a None i evaluate el construirà internament.
+    Prioritza el .graphml si existeix (graf ja construït, molt més ràpid).
+    Si no, carrega el .json i construeix el graf.
     """
     candidates: list[tuple[Path, str]] = [
         (PUZZLES_DIR / f"{puzzle_id[:8]}.graphml", "graphml"),
@@ -86,10 +85,11 @@ def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | No
             print(f"  Carregant graf '{path.name}'...")
             g = gt.load_graph(str(path))
             puzzle = Puzzle.from_json(g.gp["puzzle"])
-            return puzzle, g
         else:
+            print(f"  Construint graf de '{path.name}'...")
             puzzle = Puzzle.from_json(path.read_text())
-            return puzzle, None  # evaluate construirà el graf
+            g = build_graph(puzzle)
+        return puzzle, g
 
     print(
         f"  [✗] {puzzle_id[:8]}: fitxer no trobat a '{PUZZLES_DIR}/'.\n"
@@ -129,7 +129,7 @@ def rate_one(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> float | None:
-    """Avalua un puzzle i envia la valoració al servidor."""
+    """Avalua un puzzle amb eval3 i envia la valoració al servidor."""
     result = load_puzzle_and_graph(puzzle_id)
     if result is None:
         return None
@@ -137,7 +137,7 @@ def rate_one(
     puzzle, g = result
 
     try:
-        stars = evaluate(puzzle, g, verbose=verbose)
+        stars = evaluate(puzzle, g, verbose)
     except Exception as e:
         print(f"  [✗] {puzzle_id[:8]}: error avaluant ({e})", file=sys.stderr)
         return None
@@ -167,11 +167,15 @@ def rate_all(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
-    """Avalua i envia la valoració de tots els puzzles descarregats."""
+    """
+    Avalua i envia la valoració de tots els puzzles descarregats.
+    Si existeix el .graphml, l'usa directament per ser més ràpid.
+    """
     ids = sorted({
         p.stem for p in PUZZLES_DIR.glob("*")
         if p.suffix in (".json", ".graphml")
     })
+
     if not ids:
         print(f"No s'ha trobat cap puzzle a '{PUZZLES_DIR}/'.")
         return
@@ -195,14 +199,14 @@ def rate_all(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Avalua i envia la valoració d'un puzzle (usa eval.py propi)",
+        description="Avalua i envia la valoració d'un puzzle (usa eval3.py del company)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples:
-  python src/rate.py abc12345              # avalua i envia
-  python src/rate.py abc12345 --dry-run    # avalua sense enviar
-  python src/rate.py abc12345 --verbose    # mostra detall de les mesures
-  python src/rate.py --all                 # envia tots els descarregats
+  python src/rate3.py abc12345              # avalua i envia
+  python src/rate3.py abc12345 --dry-run    # avalua sense enviar
+  python src/rate3.py abc12345 --verbose    # mostra detall de les mesures
+  python src/rate3.py --all                 # envia tots els descarregats
         """,
     )
     parser.add_argument("id", nargs="?", metavar="ID", help="Identificador del puzzle")

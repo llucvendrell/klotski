@@ -20,7 +20,8 @@ L'avaluació combina cinc mesures estructurals del graf d'estats i dues penalitz
     puntuacions altes.
 
 Ús:
-    pixi run python src/eval.py puzzles/sample1.json
+    pixi run python src/eval.py puzzles/sample1.json           # construeix el graf
+    pixi run python src/eval.py puzzles/sample1.graphml        # carrega el graf ja construït
     pixi run python src/eval.py puzzles/sample1.json --verbose
 """
 
@@ -166,8 +167,15 @@ def measure_goal_difficulty(
 
     Dos factors penalitzen simultàniament:
 
-    a) Distància mitjana: goals propers contribueixen poc
-       (fracció = dist / path_len)
+    a) Distància mitjana: normalitzem per REF_PATH_LEN (referència
+       absoluta) en comptes de path_len. Això evita que puzzles amb
+       1 sol goal obtinguin automàticament M5 = 1.0 pel fet que
+       dist(inici → goal) == path_len per definició.
+
+       Exemple del problema anterior:
+         path_len = 4, dist_goal = 4 → fracció = 4/4 = 1.0  (incorrecte)
+       Amb la correcció:
+         path_len = 4, dist_goal = 4 → fracció = 4/50 = 0.08 (correcte)
 
     b) Abundància: molts goals indiquen que quasi qualsevol
        configuració és vàlida. Apliquem un factor d'escassetat
@@ -175,7 +183,7 @@ def measure_goal_difficulty(
 
     M5 = mitjana(fraccions) × factor_escassetat
     """
-    if not goal_vertices or path_len == 0:
+    if not goal_vertices:
         return 0.0
 
     # Mostregem per eficiència si hi ha molts goals
@@ -189,7 +197,8 @@ def measure_goal_difficulty(
     for goal_v in sample:
         vlist, _ = gt.shortest_path(g, start_v, goal_v)
         if vlist:
-            fractions.append(min((len(vlist) - 1) / path_len, 1.0))
+            # Normalitzem per REF_PATH_LEN, no per path_len
+            fractions.append(min((len(vlist) - 1) / REF_PATH_LEN, 1.0))
 
     if not fractions:
         return 0.0
@@ -197,8 +206,8 @@ def measure_goal_difficulty(
     avg_fraction = sum(fractions) / len(fractions)
 
     # Factor d'escassetat: decau com 1 / log2(n_goals + 1)
-    # 1 goal  → factor 1.00
-    # 10 goals → factor 0.29
+    # 1 goal    → factor 1.00
+    # 10 goals  → factor 0.29
     # 100 goals → factor 0.15
     # 2412 goals → factor 0.09
     scarcity = 1.0 / math.log2(len(goal_vertices) + 1)
@@ -271,12 +280,17 @@ def strict_scale(score: float) -> float:
 # ── Avaluació global ──────────────────────────────────────────────────────────
 
 
-def evaluate(puzzle: Puzzle, verbose: bool = False) -> float:
+def evaluate(puzzle: Puzzle, g: gt.Graph | None = None, verbose: bool = False) -> float:
     """
-    Construeix el graf, calcula les cinc mesures i les dues penalitzacions,
+    Calcula les cinc mesures i les dues penalitzacions sobre el graf del puzzle,
     aplica l'escala estricta i retorna una puntuació de 0 a 5 estrelles.
+
+    Si es passa el graf ja construït (g), s'evita reconstruir-lo, cosa que
+    estalvia molt de temps en puzzles grans o quan s'avaluen molts puzzles
+    seguits. Si no es passa, el graf es construeix automàticament.
     """
-    g = build_graph(puzzle)
+    if g is None:
+        g = build_graph(puzzle)
     moves = solve(g, puzzle)
 
     n_nodes  = g.num_vertices()
@@ -385,7 +399,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Avalua l'interès d'un puzzle de peces lliscants (0–5 estrelles)"
     )
-    parser.add_argument("puzzle", type=Path, help="Fitxer .json del puzzle")
+    parser.add_argument("puzzle", type=Path, help="Fitxer .json o .graphml del puzzle")
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -397,10 +411,16 @@ if __name__ == "__main__":
         print(f"Error: no s'ha trobat {args.puzzle}", file=sys.stderr)
         sys.exit(1)
 
-    puzzle = Puzzle.from_json(args.puzzle.read_text())
-    print(f"Avaluant '{args.puzzle.stem}'...")
+    if args.puzzle.suffix == ".graphml":
+        print(f"Carregant graf '{args.puzzle.stem}'...")
+        g = gt.load_graph(str(args.puzzle))
+        puzzle = Puzzle.from_json(g.gp["puzzle"])
+    else:
+        puzzle = Puzzle.from_json(args.puzzle.read_text())
+        g = None  # es construirà dins evaluate
 
-    stars = evaluate(puzzle, verbose=args.verbose)
+    print(f"Avaluant '{args.puzzle.stem}'...")
+    stars = evaluate(puzzle, g, verbose=args.verbose)
 
     if not args.verbose:
         print(f"★ Puntuació: {stars:.2f} / 5.00")

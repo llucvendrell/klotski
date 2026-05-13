@@ -1,27 +1,26 @@
 """
 Avalua un puzzle de peces lliscants i li assigna una puntuació d'interès (0–5 estrelles).
 
-L'avaluació combina cinc mesures estructurals del graf d'estats i dues penalitzacions:
+Principis de disseny:
+  1. Un camí llarg sempre puntua alt, independentment de la mida del graf.
+  2. Un graf gran és un indicador POSITIU (més complexitat).
+  3. Pocs goals relatius als nodes és positiu.
+  4. Zero BFS globals: totes les mesures usen l'array de graus i el camí de solve().
 
-  Mesures (contribucions positives):
-    M1 · Longitud del camí mínim       — dificultat directa
-    M2 · Entropia del grau dels nodes  — riquesa estructural del graf
-    M3 · Modularitat de comunitats     — presència de zones i fases
-    M4 · Excentricitat mostrejada      — posició real de l'inici al graf
-    M5 · Dificultat ponderada dels goals — penalitza goals abundants i propers
+  Mesures:
+    M1 · Longitud absoluta del camí   — escala sigmoidea, referència fixa
+    M2 · Complexitat del graf         — log(nodes × arestes/nodes)
+    M3 · Varietat de graus al camí    — coeficient de variació
+    M4 · Ratio goals/nodes invertit   — pocs goals = difícil encertar
 
-  Penalitzacions (contribucions negatives):
-    P2 · Linealitat del camí           — penalitza si la solució és quasi única
-    P3 · Goal massa proper             — penalitza si es pot acabar per accident
-
-  Escala final:
-    La puntuació base es passa per una corba quadràtica que comprimeix els
-    valors mitjans i fa que només els puzzles genuïnament bons assoleixin
-    puntuacions altes.
+  Penalitzacions:
+    P1 · Camí massa curt              — <10 moviments
+    P2 · Graf massa petit             — <100 nodes
+    P3 · Massa goals                  — >20% nodes finals
 
 Ús:
-    pixi run python src/eval.py puzzles/sample1.json           # construeix el graf
-    pixi run python src/eval.py puzzles/sample1.graphml        # carrega el graf ja construït
+    pixi run python src/eval.py puzzles/sample1.json
+    pixi run python src/eval.py puzzles/sample1.graphml
     pixi run python src/eval.py puzzles/sample1.json --verbose
 """
 
@@ -30,38 +29,44 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import graph_tool.all as gt  # type: ignore[import-untyped]
 
 from graph import build_graph
-from logic import apply_move
 from puzzle import Puzzle
 from solve import solve
 
 
-# ── Pesos de les cinc mesures (han de sumar 1.0) ──────────────────────────────
+# ── Pesos (han de sumar 1.0) ──────────────────────────────────────────────────
 
-W_PATH         = 0.30
-W_ENTROPY      = 0.20
-W_MODULARITY   = 0.20
-W_ECCENTRICITY = 0.15
-W_GOAL_DIFF    = 0.15
+W_PATH      = 0.45   # camí llarg és el factor més important
+W_COMPLEX   = 0.25   # complexitat del graf
+W_VARIETY   = 0.20   # varietat al camí
+W_GOALS     = 0.10   # escassetat dels goals
 
-# ── Paràmetres de les penalitzacions ─────────────────────────────────────────
+# ── Penalitzacions ────────────────────────────────────────────────────────────
 
-MAX_PENALTY_LINEARITY = 0.25
-MAX_PENALTY_NEAR_GOAL = 0.30
-NEAR_GOAL_THRESHOLD   = 5
+MAX_PENALTY_SHORT  = 0.25
+MAX_PENALTY_SMALL  = 0.20
+MAX_PENALTY_GOALS  = 0.15
 
-# ── Valors de referència ──────────────────────────────────────────────────────
+SHORT_PATH_THRESHOLD  = 10     # moviments mínims per no penalitzar
+SMALL_GRAPH_THRESHOLD = 100    # nodes mínims per no penalitzar
+GOAL_RATIO_MAX        = 0.30   # >30% de nodes finals → penalitza
 
-REF_PATH_LEN      = 50     # moviments de referència per M1
-MIN_PATH_LEN      = 15     # per sota d'aquí el puzzle és trivial
-DIAM_SAMPLE_SIZE  = 200    # nodes a mostrejar per estimar el diàmetre (M4)
-GOAL_SAMPLE_SIZE  = 100    # goals a mostrejar per M5 (evita O(n) shortest_paths)
+# ── Referència per M1 ────────────────────────────────────────────────────────
+
+# Valors de referència per a la sigmoide de M1:
+# path_len = 10  → ~0.27
+# path_len = 20  → ~0.50
+# path_len = 40  → ~0.73
+# path_len = 60  → ~0.83
+# path_len = 100 → ~0.92
+SIGMOID_CENTER = 15.0   # camí de 15 moviments → puntuació 0.5
+SIGMOID_SLOPE  = 0.10   # pendent de la sigmoide
 
 
 # ── Mesures individuals ───────────────────────────────────────────────────────
@@ -69,194 +74,117 @@ GOAL_SAMPLE_SIZE  = 100    # goals a mostrejar per M5 (evita O(n) shortest_paths
 
 def measure_path_length(path_len: int) -> float:
     """
-    M1 · Longitud del camí mínim normalitzada a [0, 1].
+    M1 · Longitud absoluta del camí [0, 1].  O(1).
 
-    Escala logarítmica per reflectir la percepció humana de dificultat.
-    Aplica un factor de penalització addicional si el camí és molt curt
-    (< MIN_PATH_LEN): un puzzle de 5 moviments no és interessant.
+    Usem una funció sigmoidea amb referència fixa (independent de la mida
+    del graf). Això garanteix que un camí de 52 moviments sempre puntui
+    alt (~0.87), independentment de si el graf té 100 o 1M nodes.
+
+    sigmoid(x) = 1 / (1 + exp(-k*(x - x0)))
+      x0 = SIGMOID_CENTER = 20  (camí de 20 moviments → 0.5)
+      k  = SIGMOID_SLOPE  = 0.08
+
+    Escala orientativa:
+       5 mov → 0.23    10 mov → 0.31    20 mov → 0.50
+      30 mov → 0.67    40 mov → 0.77    52 mov → 0.85
+      70 mov → 0.92   100 mov → 0.97
     """
     if path_len == 0:
         return 0.0
-    base = min(math.log(path_len + 1) / math.log(REF_PATH_LEN + 1), 1.0)
-    if path_len < MIN_PATH_LEN:
-        base *= path_len / MIN_PATH_LEN
-    return base
+    return 1.0 / (1.0 + math.exp(-SIGMOID_SLOPE * (path_len - SIGMOID_CENTER)))
 
 
-def measure_entropy(g: gt.Graph) -> float:
+def measure_complexity(n_nodes: int, n_edges: int) -> float:
     """
-    M2 · Entropia de Shannon de la distribució de graus [0, 1].
+    M2 · Complexitat del graf [0, 1].  O(1).
 
-    Mesura la variació estructural: un graf amb nodes molt connectats
-    barrejats amb callejons sense sortida és més ric i enganyós.
+    Combina la mida del graf i la seva densitat relativa en una sola mesura:
+        complexity = log2(n_nodes) × (n_edges / n_nodes) / REF
+
+    Un graf gran amb bona densitat d'arestes indica un espai d'estats
+    ric i complex. Normalitzem per un valor de referència raonable.
+
+    Valors típics:
+      16 nodes, 24 arestes  → log2(16) × 1.5 = 6.0   → ~0.08
+      35k nodes, 78k arestes → log2(35k) × 2.2 = 33   → ~0.44
+      1.1M nodes, 3.3M arestes → log2(1.1M) × 2.9 = 58 → ~0.77
     """
-    n = g.num_vertices()
-    if n <= 1:
+    if n_nodes <= 1:
         return 0.0
-
-    freq: dict[int, int] = {}
-    for v in g.vertices():
-        d = v.out_degree()
-        freq[d] = freq.get(d, 0) + 1
-
-    entropy = sum(
-        -(c / n) * math.log2(c / n)
-        for c in freq.values()
-    )
-    max_entropy = math.log2(n)
-    return entropy / max_entropy if max_entropy > 0 else 0.0
+    density = n_edges / n_nodes
+    raw = math.log2(n_nodes) * density
+    # Normalitzem: log2(1M) × 3 ≈ 60 és un valor excel·lent
+    return min(raw / 75.0, 1.0)
 
 
-def measure_modularity(g: gt.Graph) -> float:
-    """
-    M3 · Modularitat de comunitats [0, 1].
-
-    Detecta zones densament connectades internament (fases del puzzle).
-    Usa l'algorisme de Louvain de graph-tool.
-
-    A diferència del clustering (sempre 0 en grafs de puzzles per
-    absència de triangles), la modularitat discrimina bé en qualsevol
-    tipus de graf.
-    """
-    state = gt.minimize_blockmodel_dl(g, state_args={"deg_corr": False})
-    b = state.get_blocks()
-    Q = gt.modularity(g, b)
-    return float(max(0.0, min(Q, 1.0)))
-
-
-def measure_eccentricity(g: gt.Graph, start_v: gt.Vertex) -> float:
-    """
-    M4 · Excentricitat relativa de l'estat inicial [0, 1].
-
-    Mesura si l'inici és al centre (fàcil) o a la perifèria (difícil)
-    del graf. En comptes d'aproximar el diàmetre amb l'excentricitat
-    de l'inici (que sempre dona 1.0), estimem el diàmetre real
-    mostrejant DIAM_SAMPLE_SIZE nodes aleatoris i fent BFS des de
-    cadascun. Això dona una estimació robusta a cost controlat.
-    """
-    dist_from_start = gt.shortest_distance(g, source=start_v)
-    finite = [d for d in dist_from_start.a if d < 2**30]
-    if not finite:
-        return 0.0
-    ecc_start = max(finite)
-
-    # Estimació del diàmetre per mostreig
-    all_vertices = list(g.vertices())
-    sample = random.sample(
-        all_vertices,
-        min(DIAM_SAMPLE_SIZE, len(all_vertices))
-    )
-    diam = ecc_start
-    for v in sample:
-        d = gt.shortest_distance(g, source=v)
-        fd = [x for x in d.a if x < 2**30]
-        if fd:
-            diam = max(diam, max(fd))
-
-    return ecc_start / diam if diam > 0 else 0.0
-
-
-def measure_goal_difficulty(
-    g: gt.Graph,
-    start_v: gt.Vertex,
-    goal_vertices: list[gt.Vertex],
-    path_len: int,
+def measure_path_variety(
+    degree_array: np.ndarray,
+    path_indices: list[int],
 ) -> float:
     """
-    M5 · Dificultat ponderada dels goals [0, 1].
+    M3 · Varietat de graus al llarg del camí [0, 1].  O(path_len).
 
-    Dos factors penalitzen simultàniament:
+    Mesura si el camí passa per estats de connectivitat molt diferent:
+    alguns amb moltes opcions (interseccions), altres amb poques (callejons).
+    Un camí monòton és avorrit; un camí variat és interessant.
 
-    a) Distància mitjana: normalitzem per REF_PATH_LEN (referència
-       absoluta) en comptes de path_len. Això evita que puzzles amb
-       1 sol goal obtinguin automàticament M5 = 1.0 pel fet que
-       dist(inici → goal) == path_len per definició.
-
-       Exemple del problema anterior:
-         path_len = 4, dist_goal = 4 → fracció = 4/4 = 1.0  (incorrecte)
-       Amb la correcció:
-         path_len = 4, dist_goal = 4 → fracció = 4/50 = 0.08 (correcte)
-
-    b) Abundància: molts goals indiquen que quasi qualsevol
-       configuració és vàlida. Apliquem un factor d'escassetat
-       que val 1.0 quan hi ha 1 goal i decau logarítmicament.
-
-    M5 = mitjana(fraccions) × factor_escassetat
+    Usem el coeficient de variació (std/mean) normalitzat a [0,1].
     """
-    if not goal_vertices:
+    if len(path_indices) < 2:
         return 0.0
-
-    # Mostregem per eficiència si hi ha molts goals
-    sample = (
-        random.sample(goal_vertices, GOAL_SAMPLE_SIZE)
-        if len(goal_vertices) > GOAL_SAMPLE_SIZE
-        else goal_vertices
-    )
-
-    fractions = []
-    for goal_v in sample:
-        vlist, _ = gt.shortest_path(g, start_v, goal_v)
-        if vlist:
-            # Normalitzem per REF_PATH_LEN, no per path_len
-            fractions.append(min((len(vlist) - 1) / REF_PATH_LEN, 1.0))
-
-    if not fractions:
+    path_deg = degree_array[np.array(path_indices, dtype=np.int64)]
+    mean = float(path_deg.mean())
+    if mean == 0:
         return 0.0
+    cv = float(path_deg.std()) / mean
+    return min(cv, 1.0)
 
-    avg_fraction = sum(fractions) / len(fractions)
 
-    # Factor d'escassetat: decau com 1 / log2(n_goals + 1)
-    # 1 goal    → factor 1.00
-    # 10 goals  → factor 0.29
-    # 100 goals → factor 0.15
-    # 2412 goals → factor 0.09
-    scarcity = 1.0 / math.log2(len(goal_vertices) + 1)
+def measure_goal_scarcity(n_goals: int, n_nodes: int) -> float:
+    """
+    M4 · Escassetat dels goals [0, 1].  O(1).
 
-    return avg_fraction * scarcity
+    Pocs goals = difícil encertar la solució per casualitat = puzzle més bo.
+
+    Usem una funció de decaïment exponencial del ratio goals/nodes:
+      ratio 0.001 (0.1%) → 0.90   molt pocs goals
+      ratio 0.01  (1%)   → 0.74
+      ratio 0.05  (5%)   → 0.48
+      ratio 0.15  (15%)  → 0.21
+      ratio 0.50  (50%)  → 0.05   massa goals
+    """
+    if n_nodes == 0:
+        return 0.0
+    ratio = n_goals / n_nodes
+    return math.exp(-5.0 * ratio)
 
 
 # ── Penalitzacions ────────────────────────────────────────────────────────────
 
 
-def penalty_linearity(g: gt.Graph, path_indices: list[int]) -> float:
-    """
-    P2 · Penalitza si el camí òptim passa per zones poc connectades.
-
-    Compara el grau mitjà dels nodes del camí amb el grau mitjà global.
-    Un camí que passa per nodes amb molts menys veïns que la mitjana
-    indica que la solució és quasi única i el puzzle és massa lineal.
-    """
-    if not path_indices:
+def penalty_short_path(path_len: int) -> float:
+    """P1 · Camí massa curt.  O(1)."""
+    if path_len >= SHORT_PATH_THRESHOLD:
         return 0.0
-    global_avg = sum(v.out_degree() for v in g.vertices()) / g.num_vertices()
-    if global_avg == 0:
-        return 0.0
-    path_avg = sum(g.vertex(i).out_degree() for i in path_indices) / len(path_indices)
-    return MAX_PENALTY_LINEARITY * max(0.0, 1.0 - path_avg / global_avg)
+    return MAX_PENALTY_SHORT * (1.0 - path_len / SHORT_PATH_THRESHOLD)
 
 
-def penalty_near_goal(
-    g: gt.Graph,
-    start_v: gt.Vertex,
-    goal_vertices: list[gt.Vertex],
-) -> float:
-    """
-    P3 · Penalitza si el goal més proper és massa accessible.
+def penalty_small_graph(n_nodes: int) -> float:
+    """P2 · Graf massa petit.  O(1)."""
+    if n_nodes >= SMALL_GRAPH_THRESHOLD:
+        return 0.0
+    return MAX_PENALTY_SMALL * (1.0 - n_nodes / SMALL_GRAPH_THRESHOLD)
 
-    Un goal a molt poca distància de l'inici pot ser resolt per
-    accident, fent el puzzle trivial sense que el jugador ho sàpiga.
-    La penalització és proporcional a quant per sota del llindar
-    cau la distància mínima.
-    """
-    if not goal_vertices:
+
+def penalty_too_many_goals(n_goals: int, n_nodes: int) -> float:
+    """P3 · Massa goals.  O(1)."""
+    if n_nodes == 0:
         return 0.0
-    min_dist = min(
-        len(gt.shortest_path(g, start_v, gv)[0]) - 1
-        for gv in goal_vertices
-    )
-    if min_dist >= NEAR_GOAL_THRESHOLD:
+    ratio = n_goals / n_nodes
+    if ratio <= GOAL_RATIO_MAX:
         return 0.0
-    return MAX_PENALTY_NEAR_GOAL * (1.0 - min_dist / NEAR_GOAL_THRESHOLD)
+    excess = (ratio - GOAL_RATIO_MAX) / (1.0 - GOAL_RATIO_MAX)
+    return MAX_PENALTY_GOALS * min(excess, 1.0)
 
 
 # ── Escala final ──────────────────────────────────────────────────────────────
@@ -264,98 +192,84 @@ def penalty_near_goal(
 
 def strict_scale(score: float) -> float:
     """
-    Aplica una corba quadràtica a la puntuació base per fer l'escala
-    més estricta: els valors mitjans es comprimeixen cap avall i només
-    els puzzles genuïnament excel·lents assoleixen puntuacions altes.
-
-    La corba és score² (sempre a [0,1]), que penalitza valors intermedis:
-      0.5 → 0.25   (un puzzle mediocre treu 1.25★ en comptes de 2.5★)
-      0.7 → 0.49   (un puzzle bo treu 2.45★)
-      0.9 → 0.81   (un puzzle molt bo treu 4.05★)
-      1.0 → 1.00   (un puzzle perfecte treu 5.00★)
+    Escala lineal: la puntuació base es mapeja directament a estrelles.
+    La sigmoide de M1 ja garanteix que puzzles bons puntuen alt.
+      0.5 → 2.5★   0.7 → 3.5★   0.8 → 4.0★   0.9 → 4.5★
     """
-    return score ** 2
+    return score
 
 
 # ── Avaluació global ──────────────────────────────────────────────────────────
 
 
-def evaluate(puzzle: Puzzle, g: gt.Graph | None = None, verbose: bool = False) -> float:
+def evaluate(
+    puzzle: Puzzle,
+    g: gt.Graph | None = None,
+    verbose: bool = False,
+) -> float:
     """
-    Calcula les cinc mesures i les dues penalitzacions sobre el graf del puzzle,
-    aplica l'escala estricta i retorna una puntuació de 0 a 5 estrelles.
-
-    Si es passa el graf ja construït (g), s'evita reconstruir-lo, cosa que
-    estalvia molt de temps en puzzles grans o quan s'avaluen molts puzzles
-    seguits. Si no es passa, el graf es construeix automàticament.
+    Avaluació completa. L'únic BFS és el de solve() (ja necessari).
+    Tota la resta és O(1) o O(V) numpy.
     """
     if g is None:
         g = build_graph(puzzle)
-    moves = solve(g, puzzle)
 
+    moves    = solve(g, puzzle)
+    path_len = len(moves) if moves else 0
     n_nodes  = g.num_vertices()
     n_edges  = g.num_edges()
-    path_len = len(moves) if moves else 0
 
-    is_start_prop = g.vp["is_start"]
     is_goal_prop  = g.vp["is_goal"]
     state_prop    = g.vp["state"]
 
-    start_v: gt.Vertex | None = None
-    goal_vertices: list[gt.Vertex] = []
-    for v in g.vertices():
-        if is_start_prop[v]:
-            start_v = v
-        if is_goal_prop[v]:
-            goal_vertices.append(v)
+    # ── Arrays numpy d'una passada ────────────────────────────────────
+    n_goals      = int(is_goal_prop.a.sum())
+    degree_prop  = g.degree_property_map("out")
+    degree_array = degree_prop.a.copy()
 
-    if start_v is None:
-        raise ValueError("No s'ha trobat l'estat inicial al graf")
+    # ── Índexs del camí per M3 ────────────────────────────────────────
+    # Reconstruïm els índexs del camí directament des del graf.
+    # Evitem apply_move (que valida cada pas i pot fallar amb dist>1)
+    # i usem shortest_path sobre el graf per obtenir la seqüència de nodes.
+    path_indices: list[int] = []
+    if moves and len(g.vp["is_start"].a) > 0:
+        start_idx = int(np.where(g.vp["is_start"].a)[0][0])
+        goal_indices_np = np.where(g.vp["is_goal"].a)[0]
+        if len(goal_indices_np) > 0:
+            dist_tmp  = gt.shortest_distance(g, source=g.vertex(start_idx))
+            goal_dists = dist_tmp.a[goal_indices_np]
+            best_goal  = g.vertex(int(goal_indices_np[np.argmin(goal_dists)]))
+            path_verts, _ = gt.shortest_path(g, g.vertex(start_idx), best_goal)
+            path_indices   = [int(v) for v in path_verts]
 
-    n_goals = len(goal_vertices)
-
-    # ── Cinc mesures ──────────────────────────────────────────────────
-    m_path  = measure_path_length(path_len)
-    m_ent   = measure_entropy(g)
-    m_modul = measure_modularity(g)
-    m_ecc   = measure_eccentricity(g, start_v)
-    m_gdiff = measure_goal_difficulty(g, start_v, goal_vertices, path_len)
+    # ── Quatre mesures ────────────────────────────────────────────────
+    m_path    = measure_path_length(path_len)
+    m_complex = measure_complexity(n_nodes, n_edges)
+    m_variety = measure_path_variety(degree_array, path_indices)
+    m_goals   = measure_goal_scarcity(n_goals, n_nodes)
 
     score_raw = (
-        W_PATH         * m_path  +
-        W_ENTROPY      * m_ent   +
-        W_MODULARITY   * m_modul +
-        W_ECCENTRICITY * m_ecc   +
-        W_GOAL_DIFF    * m_gdiff
+        W_PATH    * m_path    +
+        W_COMPLEX * m_complex +
+        W_VARIETY * m_variety +
+        W_GOALS   * m_goals
     )
 
-    # ── Penalitzacions ────────────────────────────────────────────────
-    key_to_idx = {
-        tuple(tuple(p) for p in json.loads(state_prop[v])): int(v)
-        for v in g.vertices()
-    }
-    path_indices: list[int] = []
-    if moves:
-        current = puzzle.start
-        path_indices.append(key_to_idx[current.positions])
-        for move in moves:
-            current = apply_move(puzzle, current, move)
-            path_indices.append(key_to_idx[current.positions])
+    # ── Tres penalitzacions ───────────────────────────────────────────
+    pen_short = penalty_short_path(path_len)
+    pen_small = penalty_small_graph(n_nodes)
+    pen_goals = penalty_too_many_goals(n_goals, n_nodes)
 
-    pen_linear    = penalty_linearity(g, path_indices)
-    pen_near_goal = penalty_near_goal(g, start_v, goal_vertices)
-
-    score_penalized = max(0.0, score_raw - pen_linear - pen_near_goal)
-
-    # ── Escala estricta i conversió a estrelles ───────────────────────
-    stars = round(strict_scale(score_penalized) * 5.0, 2)
+    score_penalized = max(0.0, score_raw - pen_short - pen_small - pen_goals)
+    raw   = strict_scale(score_penalized) * 5.0
+    stars = max(1, min(5, round(raw)))
 
     if verbose:
         _print_report(
             n_nodes, n_edges, n_goals, path_len,
-            m_path, m_ent, m_modul, m_ecc, m_gdiff,
-            pen_linear, pen_near_goal,
-            score_raw, score_penalized, stars,
+            m_path, m_complex, m_variety, m_goals,
+            pen_short, pen_small, pen_goals,
+            score_raw, score_penalized, raw, stars,
         )
 
     return stars
@@ -363,11 +277,10 @@ def evaluate(puzzle: Puzzle, g: gt.Graph | None = None, verbose: bool = False) -
 
 def _print_report(
     n_nodes, n_edges, n_goals, path_len,
-    m_path, m_ent, m_modul, m_ecc, m_gdiff,
-    pen_linear, pen_near_goal,
-    score_raw, score_penalized, stars,
+    m_path, m_complex, m_variety, m_goals,
+    pen_short, pen_small, pen_goals,
+    score_raw, score_penalized, raw, stars,
 ) -> None:
-    """Mostra un informe detallat de l'avaluació."""
     print("─" * 52)
     print(f"  Nodes del graf        : {n_nodes}")
     print(f"  Arestes               : {n_edges}")
@@ -375,20 +288,21 @@ def _print_report(
     print(f"  Longitud camí mínim   : {path_len} moviments")
     print("─" * 52)
     print(f"  M1 longitud camí      : {m_path:.3f}  (pes {W_PATH:.0%})")
-    print(f"  M2 entropia graus     : {m_ent:.3f}  (pes {W_ENTROPY:.0%})")
-    print(f"  M3 modularitat        : {m_modul:.3f}  (pes {W_MODULARITY:.0%})")
-    print(f"  M4 excentricitat inici: {m_ecc:.3f}  (pes {W_ECCENTRICITY:.0%})")
-    print(f"  M5 dificultat goals   : {m_gdiff:.3f}  (pes {W_GOAL_DIFF:.0%})")
+    print(f"  M2 complexitat graf   : {m_complex:.3f}  (pes {W_COMPLEX:.0%})")
+    print(f"  M3 varietat al camí   : {m_variety:.3f}  (pes {W_VARIETY:.0%})")
+    print(f"  M4 escassetat goals   : {m_goals:.3f}  (pes {W_GOALS:.0%})")
     print("─" * 52)
     print(f"  Puntuació bruta       : {score_raw:.3f}")
-    if pen_linear > 0:
-        print(f"  P2 linealitat camí    : -{pen_linear:.3f}  (solució massa única)")
-    if pen_near_goal > 0:
-        print(f"  P3 goal massa proper  : -{pen_near_goal:.3f}  (goal assolible per accident)")
+    if pen_short > 0:
+        print(f"  P1 camí curt          : -{pen_short:.3f}  (menys de {SHORT_PATH_THRESHOLD} moviments)")
+    if pen_small > 0:
+        print(f"  P2 graf petit         : -{pen_small:.3f}  (menys de {SMALL_GRAPH_THRESHOLD} nodes)")
+    if pen_goals > 0:
+        print(f"  P3 massa goals        : -{pen_goals:.3f}  (>{GOAL_RATIO_MAX:.0%} de nodes finals)")
     print(f"  Puntuació penalitzada : {score_penalized:.3f}")
-    print(f"  Escala estricta (²)   : {score_penalized**2:.3f}")
+    print(f"  Puntuació escalada    : {strict_scale(score_penalized):.3f}")
     print("─" * 52)
-    print(f"  ★ Puntuació final     : {stars:.2f} / 5.00")
+    print(f"  ★ Puntuació final     : {stars} / 5  ({raw:.2f} abans d'arrodonir)")
     print("─" * 52)
 
 
@@ -400,11 +314,8 @@ if __name__ == "__main__":
         description="Avalua l'interès d'un puzzle de peces lliscants (0–5 estrelles)"
     )
     parser.add_argument("puzzle", type=Path, help="Fitxer .json o .graphml del puzzle")
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Mostra el detall de totes les mesures",
-    )
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Mostra el detall de totes les mesures")
     args = parser.parse_args()
 
     if not args.puzzle.exists():
@@ -417,10 +328,10 @@ if __name__ == "__main__":
         puzzle = Puzzle.from_json(g.gp["puzzle"])
     else:
         puzzle = Puzzle.from_json(args.puzzle.read_text())
-        g = None  # es construirà dins evaluate
+        g = None
 
     print(f"Avaluant '{args.puzzle.stem}'...")
     stars = evaluate(puzzle, g, verbose=args.verbose)
 
     if not args.verbose:
-        print(f"★ Puntuació: {stars:.2f} / 5.00")
+        print(f"★ Puntuació: {stars} / 5")

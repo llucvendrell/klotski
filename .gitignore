@@ -8,3 +8,4 @@
 .pixi/*
 !.pixi/config.toml
 .token
+puzzles/*.graphml

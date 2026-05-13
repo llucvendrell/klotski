@@ -102,8 +102,8 @@ def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | No
 # ── Comunicació amb el servidor ───────────────────────────────────────────────
 
 
-def send_rating(puzzle_id: str, stars: float, token: str) -> None:
-    """Envia una valoració al repositori via POST."""
+def send_rating(puzzle_id: str, stars: int, token: str) -> None:
+    """Envia una valoració (enter 1-5) al repositori via POST."""
     url  = f"{BASE_URL}/puzzles/{puzzle_id}/votes"
     body = json.dumps({"rating": stars}).encode()
     request = urllib.request.Request(
@@ -128,8 +128,11 @@ def rate_one(
     *,
     dry_run: bool = False,
     verbose: bool = False,
-) -> float | None:
-    """Avalua un puzzle i envia la valoració al servidor."""
+) -> int | None:
+    """
+    Avalua un puzzle i envia la valoració al servidor.
+    Retorna la puntuació (enter 1-5) o None si hi ha hagut un error.
+    """
     result = load_puzzle_and_graph(puzzle_id)
     if result is None:
         return None
@@ -137,12 +140,14 @@ def rate_one(
     puzzle, g = result
 
     try:
-        stars = evaluate(puzzle, g, verbose=verbose)
+        # verbose és posicional a evaluate(puzzle, g, verbose)
+        stars = evaluate(puzzle, g, verbose)
     except Exception as e:
         print(f"  [✗] {puzzle_id[:8]}: error avaluant ({e})", file=sys.stderr)
         return None
 
-    print(f"  [★] {puzzle_id[:8]}: {stars:.2f} / 5.00", end="")
+    # stars és un enter 1-5
+    print(f"  [★] {puzzle_id[:8]}: {stars} / 5", end="")
 
     if dry_run:
         print("  (dry-run, no s'ha enviat)")

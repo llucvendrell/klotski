@@ -9,7 +9,7 @@ L'exploració es fa amb DFS des de l'estat inicial.
 El graf es desa en format .graphml per poder-lo carregar amb altres eines.
  
 Ús:
-    pixi run python src/graph_eficient.py puzzles/sample1.json (genera el .graphml de sample1.json)
+    pixi run python3 src/graph_eficient.py puzzles/sample1.json (genera el .graphml de sample1.json)
     pixi run python src/3D_view.py puzzles/sample1.graphml (visualitzar el graf de sample1)
 """
  

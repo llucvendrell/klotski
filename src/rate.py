@@ -8,6 +8,12 @@ El token d'autenticació es llegeix de la variable d'entorn KLOTSKI_TOKEN
 o d'un fitxer .token al directori arrel del projecte.
 
 Ús:
+# Dins la carpeta del projecte klotski
+echo "el-seu-token-aqui" > .token
+o
+export KLOTSKI_TOKEN=el-seu-token-aqui
+python src/rate.py sample1 --dry-run
+
     python src/rate.py <id>               # avalua i envia la valoració
     python src/rate.py <id> --dry-run     # avalua però no envia
     python src/rate.py <id> --verbose     # mostra detall de les mesures

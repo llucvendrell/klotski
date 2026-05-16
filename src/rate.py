@@ -110,7 +110,7 @@ def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | No
 
 def send_rating(puzzle_id: str, stars: int, token: str) -> None:
     """Envia una valoració (enter 1-5) al repositori via POST."""
-    url  = f"{BASE_URL}/puzzles/{puzzle_id}/votes"
+    url  = f"{BASE_URL}/puzzles/{puzzle_id}/stars"
     body = json.dumps({"rating": stars}).encode()
     request = urllib.request.Request(
         url,

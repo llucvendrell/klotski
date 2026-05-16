@@ -1,7 +1,7 @@
 """
 Joc interactiu de trencaclosques de peces lliscants amb PyGame.
 
-Ús: python3 game.py <puzzle.json>
+Ús: python3 play.py <puzzle.json>
 """
 
 from __future__ import annotations

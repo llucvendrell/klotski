@@ -8,6 +8,14 @@ L'exploració es fa amb DFS des de l'estat inicial.
 
 El graf es desa en format .graphml per poder-lo carregar amb altres eines.
 
+Millora respecte la versió anterior: state_key agrupa peces amb la mateixa
+forma i ordena les seves posicions dins de cada grup. Això fa que dos estats
+on s'han intercanviat peces iguals es considerin el MATEIX node, reduint
+significativament la mida del graf quan hi ha peces repetides.
+
+Exemple: si hi ha dues peces iguals a les posicions (1,0) i (3,2),
+intercanviar-les dona el mateix estat canònic → el graf és més petit.
+
 Ús:
     pixi run python src/graph.py puzzles/sample1.json
     pixi run python src/3D_view.py puzzles/sample1.graphml
@@ -24,9 +32,7 @@ import graph_tool.all as gt  # type: ignore[import-untyped]
 from logic import possible_moves, apply_move, is_goal
 from puzzle import Puzzle, State
 
-# Clau d'estat: tupla de posicions de totes les peces, en ordre canònic.
-# Usem directament State.positions (que ja és una tuple[Coord, ...]) com a clau
-# del diccionari visited, evitant conversions innecessàries.
+# Clau d'estat: tupla de posicions canòniques de totes les peces.
 StateKey = tuple[tuple[int, int], ...]
 
 
@@ -35,34 +41,48 @@ def state_key(puzzle: Puzzle, state: State | str) -> StateKey:
     Retorna la clau canònica d'un estat.
 
     Si l'estat és un string JSON (com el que desa graph-tool), el parseja.
-    Si és un State, retorna directament les posicions.
+    Si és un State, usa directament les posicions.
 
-    Nota sobre peces iguals: dues peces amb la mateixa forma però diferent
-    posició tenen índexos fixos (definits en la canonicalització del puzzle),
-    de manera que intercanviar-les dóna claus diferents. No cal cap tractament
-    especial: la identitat de cada peça és el seu índex.
+    Millora clau: peces amb la mateixa forma es consideren intercanviables.
+    Les seves posicions s'ordenen dins de cada grup, de manera que dos
+    estats que difereixen només en l'intercanvi de peces iguals tenen
+    la mateixa clau → mateix node al graf → graf més petit i ràpid.
+
+    Exemple:
+        Peces [A, A, B] a posicions [(3,2), (1,0), (0,1)]
+        Grup A: ordena [(3,2),(1,0)] → [(1,0),(3,2)]
+        Clau: ((1,0),(3,2),(0,1))   ← independent de l'ordre de les A
     """
     if isinstance(state, str):
-        return tuple(tuple(p) for p in json.loads(state))
-    return state.positions
+        positions: list[tuple[int, int]] = [tuple(p) for p in json.loads(state)]
+    else:
+        positions = list(state.positions)
+
+    result: list[tuple[int, int]] = []
+    i = 0
+    while i < len(puzzle.pieces):
+        # Troba el final del grup de peces amb la mateixa forma
+        j = i + 1
+        while j < len(puzzle.pieces) and puzzle.pieces[j] == puzzle.pieces[i]:
+            j += 1
+        # Ordena les posicions dins del grup (peces intercanviables)
+        result.extend(sorted(positions[i:j]))
+        i = j
+
+    return tuple(result)
 
 
 def build_graph(puzzle: Puzzle) -> gt.Graph:
     """
     Construeix el graf d'estats del puzzle mitjançant DFS iteratiu.
 
-    Optimitzacions respecte la versió original:
-    - Les arestes duplicades s'eviten consultant `visited` abans d'afegir-les.
-      En la versió original, sempre s'afegia l'aresta, fins i tot entre nodes
-      ja connectats, generant múltiples arestes paral·leles que inflaven el
-      graf i alentien qualsevol algorisme posterior.
-    - `visited` mapeja StateKey → int (índex de vèrtex) en comptes de
-      StateKey → gt.Vertex. Accedir per índex enter és més ràpid que
-      mantenir referències a objectes Vertex de graph-tool.
-    - Les propietats dels nodes es desen en arrays de Python i es bolquen
-      al graf al final, evitant crides repetides a graph-tool per node.
-    - `possible_moves` ja retorna moviments d'un sol pas; apliquem cada
-      moviment una sola vegada sense recalcular l'estat de la peça.
+    Optimitzacions:
+    - state_key agrupa peces iguals: el graf pot ser molt més petit quan
+      hi ha peces repetides (menys nodes → menys temps i memòria).
+    - visited mapeja StateKey → int: accés O(1) sense overhead de gt.Vertex.
+    - if src_idx < dst_idx: evita arestes duplicades (cada aresta s'afegeix
+      exactament una vegada, eliminant el bug del graph_eficient original).
+    - Les propietats es desen al graf únicament al final, en bloc.
 
     Retorna un graf no dirigit amb:
     - vp['state']   : posicions de cada node (JSON)
@@ -72,51 +92,51 @@ def build_graph(puzzle: Puzzle) -> gt.Graph:
     """
     g = gt.Graph(directed=False)
 
-    # Reservem les propietats abans de poblar el graf
     state_prop    = g.new_vertex_property("string")
     is_start_prop = g.new_vertex_property("bool")
     is_goal_prop  = g.new_vertex_property("bool")
 
-    # visited: StateKey → índex enter del vèrtex (més ràpid que gt.Vertex)
+    # visited: StateKey canònica → índex enter del vèrtex
     visited: dict[StateKey, int] = {}
+
+    # Clau de l'estat inicial (per marcar is_start correctament)
+    start_key = state_key(puzzle, puzzle.start)
 
     def get_or_create(state: State) -> tuple[int, bool]:
         """
         Retorna (índex, és_nou) del vèrtex corresponent a state.
-        Si no existeix, crea el vèrtex i omple les seves propietats.
+        Usa la clau canònica amb grups de peces iguals.
         """
-        key = state.positions  # evitem cridar state_key: ja és una tupla
+        key = state_key(puzzle, state)
         if key in visited:
             return visited[key], False
 
-        v = g.add_vertex()
+        v   = g.add_vertex()
         idx = int(v)
         visited[key] = idx
 
-        state_prop[v]    = json.dumps([list(p) for p in state.positions])
-        is_start_prop[v] = state == puzzle.start
+        # Desem les posicions en l'ordre de la clau canònica
+        state_prop[v]    = json.dumps([list(p) for p in key])
+        is_start_prop[v] = (key == start_key)
         is_goal_prop[v]  = is_goal(puzzle, state)
 
         return idx, True
 
     # ── DFS iteratiu ──────────────────────────────────────────────────
-    # La pila conté estats pendents d'explorar.
-    # Creem el node inicial abans d'entrar al bucle.
     get_or_create(puzzle.start)
     stack: list[State] = [puzzle.start]
 
     while stack:
         current = stack.pop()
-        src_idx = visited[current.positions]
+        src_idx = visited[state_key(puzzle, current)]
 
         for move in possible_moves(puzzle, current):
-            nxt = apply_move(puzzle, current, move)
+            nxt     = apply_move(puzzle, current, move)
             dst_idx, is_new = get_or_create(nxt)
 
-            # Afegim l'aresta només si no existia encara.
-            # Com que el graf és no dirigit i recorrem tots els veïns
-            # dels dos costats, sense aquesta guarda cada aresta
-            # s'afegiria dues vegades (una per cada sentit).
+            # Afegim l'aresta exactament una vegada (sense duplicats).
+            # La guarda src < dst garanteix que cada parell (A,B) s'afegeix
+            # una sola vegada independentment de l'ordre en que es visiten.
             if src_idx < dst_idx:
                 g.add_edge(src_idx, dst_idx)
 
@@ -138,7 +158,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     puzzle_path = Path(sys.argv[1])
-    puzzle = Puzzle.from_json(puzzle_path.read_text())
+    puzzle      = Puzzle.from_json(puzzle_path.read_text())
 
     out_path = (
         Path(sys.argv[2]) if len(sys.argv) >= 3
@@ -150,7 +170,7 @@ if __name__ == "__main__":
 
     n_nodes = g.num_vertices()
     n_edges = g.num_edges()
-    n_goals = sum(1 for v in g.vertices() if g.vp["is_goal"][v])
+    n_goals = int(g.vp["is_goal"].a.sum())
     print(f"Nodes: {n_nodes}, Arestes: {n_edges}, Estats finals: {n_goals}")
 
     g.save(str(out_path))

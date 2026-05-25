@@ -83,15 +83,27 @@ def get_moves(
 # ── BFS invers ────────────────────────────────────────────────────────────────
 
 
+# Distància mínima necessària per a cada llindar d'estrelles.
+# Permet descartar BFS primerenc si veiem que no hi ha cap camí prou llarg.
+# Calculat a partir de la sigmoide inversa: si volem X★, necessitem path_len Y.
+_MIN_PATH_FOR_STARS = {1: 0, 2: 8, 3: 15, 4: 25, 5: 40}
+
+
 def inverse_bfs(
     W: int, H: int,
     pieces: list[list[list[int]]],
     goal_positions: list[tuple[int, int]],
     goal_idx: int,
+    min_path: int = 0,
 ) -> dict | None:
     """
     BFS invers des del goal: explora tots els estats accessibles.
     Retorna estadístiques per avaluar el puzzle, o None si és massa gran.
+
+    min_path: si es defineix, atura el BFS ANTICIPADAMENT quan el graf
+    ja és prou gran per saber que no hi ha cap camí de longitud min_path.
+    Concretament: si hem visitat més nodes que BFS_NODE_LIMIT/10 i la
+    distància màxima és < min_path/2, descartem ràpidament.
     """
     start     = tuple(goal_positions)
     goal_pos  = goal_positions[goal_idx]
@@ -104,6 +116,7 @@ def inverse_bfs(
     max_dist  = 0
     best_state = start
     n_goals   = 1  # el goal en si és un estat final
+    early_check = max(500, BFS_NODE_LIMIT // 200)  # comprovem amb pocs nodes
 
     while queue:
         curr      = queue.popleft()
@@ -114,6 +127,12 @@ def inverse_bfs(
         if curr_dist > max_dist:
             max_dist   = curr_dist
             best_state = curr
+
+        # Descart primerenc: si amb pocs nodes el camí és molt curt,
+        # aquest taulell mai donarà el llindar d'estrelles demanat
+        if min_path > 0 and len(visited) == early_check:
+            if max_dist < min_path // 2:
+                return None
 
         for p_idx, nxt_pos in moves:
             n_edges += 1
@@ -226,40 +245,82 @@ def place_pieces(
 # ── Desat canònic ─────────────────────────────────────────────────────────────
 
 
-def save_puzzle(
+def build_puzzle_json(
     W: int, H: int,
     pieces: list[list[list[int]]],
     start_state: tuple,
     goal_shape: list[list[int]],
     goal_pos: tuple[int, int],
-    stars: float,
-    path_len: int,
-    output_dir: Path,
-    suffix: str = "",
-) -> Path:
-    # Ordenem les coordenades de cada peça lexicogràficament
-    # (Puzzle.from_json ho exigeix)
+) -> dict | None:
+    """
+    Construeix el diccionari JSON canònic del puzzle i el valida amb
+    Puzzle.from_json. Retorna None si el puzzle no és vàlid.
+
+    Ordenar les coordenades i les peces és obligatori per a que
+    Puzzle.from_json no llanci ValueError.
+    """
+    from puzzle import Puzzle as _Puzzle
+
+    # Ordenem coordenades de cada peça (Puzzle.from_json ho exigeix)
     pieces_normalized = [sorted(coords) for coords in pieces]
 
+    # Ordenem peces per (forma, posició) — ordre canònic
     items = sorted(
         zip(pieces_normalized, [list(p) for p in start_state]),
         key=lambda x: (x[0], x[1]),
     )
     pieces_sorted = [x[0] for x in items]
     start_sorted  = [x[1] for x in items]
-    goal_shape_normalized = sorted(goal_shape)
+
+    goal_shape_norm = sorted(goal_shape)
     goal_idx = next(
-        (i for i, p in enumerate(pieces_sorted) if p == goal_shape_normalized), 0
+        (i for i, p in enumerate(pieces_sorted) if p == goal_shape_norm), 0
     )
+
     puzzle_dict = {
         "W": W, "H": H, "walls": [],
         "pieces": pieces_sorted,
         "start":  start_sorted,
         "goals":  [{"i": goal_idx, "pos": list(goal_pos)}],
     }
-    name = f"puzzle_{stars:.2f}stars_{path_len}mov_{random.randint(1000,9999)}{suffix}.json"
-    path = output_dir / name
-    path.write_text(json.dumps(puzzle_dict))
+
+    # Validem que Puzzle.from_json l'accepta (detecta errors de canonicalització)
+    try:
+        p = _Puzzle.from_json(json.dumps(puzzle_dict))
+    except Exception:
+        return None
+
+    # Validem que l'estat inicial NO és ja un estat final
+    # (si ho fos, el camí mínim seria 0 i eval donaria 0★)
+    from logic import is_goal as _is_goal
+    if _is_goal(p, p.start):
+        return None
+
+    return puzzle_dict
+
+
+def save_puzzle(
+    puzzle_dict: dict,
+    stars: float,
+    path_len: int,
+    output_dir: Path,
+    suffix: str = "",
+) -> Path | None:
+    """
+    Desa el puzzle JSON al disc. Usa el hash del contingut com a nom
+    per garantir unicitat (evita col·lisions amb random.randint).
+    Retorna None si el fitxer ja existia (puzzle duplicat).
+    """
+    import hashlib
+    content   = json.dumps(puzzle_dict)
+    file_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
+    name      = f"puzzle_{stars:.2f}stars_{path_len}mov_{file_hash}{suffix}.json"
+    path      = output_dir / name
+
+    if path.exists():
+        return None  # puzzle duplicat, no sobreescribim
+
+    path.write_text(content)
     return path
 
 
@@ -292,7 +353,9 @@ def run(min_stars: float, max_stars: float, n: int, output_dir: Path) -> None:
             goal_shape = pieces[goal_idx]
             goal_pos   = goal_positions[goal_idx]
 
-            stats = inverse_bfs(W, H, pieces, goal_positions, goal_idx)
+            min_path = _MIN_PATH_FOR_STARS.get(int(min_stars), 0)
+            stats = inverse_bfs(W, H, pieces, goal_positions, goal_idx,
+                                min_path=min_path)
             if stats is None:
                 continue
 
@@ -315,11 +378,18 @@ def run(min_stars: float, max_stars: float, n: int, output_dir: Path) -> None:
             sys.stdout.flush()
 
             if min_stars <= stars <= max_stars:
-                path = save_puzzle(
+                puzzle_dict = build_puzzle_json(
                     W, H, pieces, stats["start_state"],
-                    goal_shape, goal_pos, stars,
+                    goal_shape, goal_pos,
+                )
+                if puzzle_dict is None:
+                    continue  # JSON invàlid, descartem
+                path = save_puzzle(
+                    puzzle_dict, stars,
                     stats["path_len"], output_dir,
                 )
+                if path is None:
+                    continue  # duplicat, descartem
                 saved += 1
                 print(f"\n  [✓] {stars:.2f}★  {stats['path_len']}mov  "
                       f"{stats['n_nodes']}n  →  {path}")
@@ -327,14 +397,24 @@ def run(min_stars: float, max_stars: float, n: int, output_dir: Path) -> None:
     except KeyboardInterrupt:
         print("\n\nAturada.")
         if best is not None:
-            path = save_puzzle(
+            puzzle_dict = build_puzzle_json(
                 best["W"], best["H"], best["pieces"],
-                best["start_state"], best["goal_shape"],
-                best["goal_pos"], best["stars"],
-                best["path_len"], output_dir, suffix="_rescat",
+                best["start_state"], best["goal_shape"], best["goal_pos"],
             )
-            print(f"  [rescat] {best['stars']:.2f}★  "
-                  f"{best['path_len']}mov  →  {path}")
+            if puzzle_dict is not None:
+                path = save_puzzle(
+                    puzzle_dict, best["stars"],
+                    best["path_len"], output_dir, suffix="_rescat",
+                )
+                if path:
+                    print(f"  [rescat] {best['stars']:.2f}★  "
+                          f"{best['path_len']}mov  →  {path}")
+                else:
+                    print(f"  [rescat] ja existia al disc (duplicat)")
+            else:
+                print("  [rescat] error en canonicalitzar el puzzle")
+        else:
+            print("  No s'havia trobat cap puzzle vàlid encara.")
         sys.exit(0)
 
     print(f"\nFet! {saved} puzzle(s) en {attempts} intents.")

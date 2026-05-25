@@ -8,12 +8,6 @@ El token d'autenticació es llegeix de la variable d'entorn KLOTSKI_TOKEN
 o d'un fitxer .token al directori arrel del projecte.
 
 Ús:
-# Dins la carpeta del projecte klotski
-echo "el-seu-token-aqui" > .token
-o
-export KLOTSKI_TOKEN=el-seu-token-aqui
-python src/rate.py sample1 --dry-run
-
     python src/rate.py <id>               # avalua i envia la valoració
     python src/rate.py <id> --dry-run     # avalua però no envia
     python src/rate.py <id> --verbose     # mostra detall de les mesures
@@ -32,8 +26,8 @@ from pathlib import Path
 
 import graph_tool.all as gt  # type: ignore[import-untyped]
 
-from eval import evaluate
-from graph import build_graph
+from evaloptimitzatbo import evaluate
+from graph_eficientcopybo import build_graph
 from puzzle import Puzzle
 
 BASE_URL    = "https://klotski.pauek.dev/api"
@@ -109,8 +103,8 @@ def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | No
 
 
 def send_rating(puzzle_id: str, stars: int, token: str) -> None:
-    """Envia una valoració (enter 1-5) al repositori via POST."""
-    url  = f"{BASE_URL}/puzzles/{puzzle_id}/stars"
+    """Envia una valoració (enter 0-5) al repositori via POST."""
+    url  = f"{BASE_URL}/puzzles/{puzzle_id}/votes"   # endpoint correcte
     body = json.dumps({"rating": stars}).encode()
     request = urllib.request.Request(
         url,
@@ -137,7 +131,7 @@ def rate_one(
 ) -> int | None:
     """
     Avalua un puzzle i envia la valoració al servidor.
-    Retorna la puntuació (enter 1-5) o None si hi ha hagut un error.
+    Retorna la puntuació (enter 0-5) o None si hi ha hagut un error.
     """
     result = load_puzzle_and_graph(puzzle_id)
     if result is None:
@@ -146,13 +140,11 @@ def rate_one(
     puzzle, g = result
 
     try:
-        # verbose és posicional a evaluate(puzzle, g, verbose)
         stars = evaluate(puzzle, g, verbose)
     except Exception as e:
         print(f"  [✗] {puzzle_id[:8]}: error avaluant ({e})", file=sys.stderr)
         return None
 
-    # stars és un enter 1-5
     print(f"  [★] {puzzle_id[:8]}: {stars} / 5", end="")
 
     if dry_run:

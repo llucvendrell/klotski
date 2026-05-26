@@ -325,7 +325,7 @@ if __name__ == "__main__":
         # Avaluem el puzzle
         try:
             g = build_graph(puzzle)
-            stars = evaluate(puzzle, g)
+            stars, raw = evaluate(puzzle, g)
         except Exception:
             continue
 
@@ -336,6 +336,6 @@ if __name__ == "__main__":
         path = args.output / f"{puzzle.hash()[:8]}.json"
         path.write_text(puzzle.to_json())
         saved += 1
-        print(f"\n  [★ {stars:.2f}] Desat: {path}")
+        print(f"\n  [★ {stars} ({raw:.2f})] Desat: {path}")
 
     print(f"\nFet! {saved} puzzle(s) generats en {attempts} intents.")

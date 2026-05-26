@@ -126,5 +126,35 @@ def replay_moves(puzzle: Puzzle, moves: list[Move]) -> list[State]:
 
 
 def is_goal(puzzle: Puzzle, state: State) -> bool:
-    """Comprova si l'estat actual satisfà tots els objectius."""
-    return all(state.positions[i] == pos for i, pos in puzzle.goals)
+    """
+    Comprova si l'estat actual satisfà tots els objectius.
+    Considera que peces del mateix tipus són intercanviables si l'índex
+    indicat al goal correspon a un grup de peces idèntiques.
+    """
+    # Agrupem posicions per tipus de peça per a una comprovació ràpida
+    # (Això s'hauria de pre-calcular si es crida moltes vegades, però 
+    # per is_goal és suficientment ràpid aquí)
+    
+    # Identificarem els grups de peces iguals tal com fem a state_key
+    i = 0
+    groups = []
+    while i < len(puzzle.pieces):
+        j = i + 1
+        while j < len(puzzle.pieces) and puzzle.pieces[j] == puzzle.pieces[i]:
+            j += 1
+        groups.append((i, j))
+        i = j
+
+    # Per cada objectiu, comprovem si algun membre del seu grup és a la posició
+    for p_idx, target_pos in puzzle.goals.items():
+        # Busquem a quin grup pertany p_idx
+        found = False
+        for start, end in groups:
+            if start <= p_idx < end:
+                # Comprovem si alguna de les peces [start:end] és a target_pos
+                if target_pos in state.positions[start:end]:
+                    found = True
+                break
+        if not found:
+            return False
+    return True

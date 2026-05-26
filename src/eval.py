@@ -206,10 +206,9 @@ def evaluate(
     puzzle: Puzzle,
     g: gt.Graph | None = None,
     verbose: bool = False,
-) -> float:
+) -> tuple[int, float]:
     """
-    Avaluació completa. L'únic BFS és el de solve() (ja necessari).
-    Tota la resta és O(1) o O(V) numpy.
+    Avaluació completa. Retorna (stars, raw_score).
     """
     if g is None:
         g = build_graph(puzzle)
@@ -272,7 +271,7 @@ def evaluate(
             score_raw, score_penalized, raw, stars,
         )
 
-    return stars
+    return stars, raw
 
 
 def _print_report(
@@ -331,7 +330,7 @@ if __name__ == "__main__":
         g = None
 
     print(f"Avaluant '{args.puzzle.stem}'...")
-    stars = evaluate(puzzle, g, verbose=args.verbose)
+    stars, raw = evaluate(puzzle, g, verbose=args.verbose)
 
     if not args.verbose:
-        print(f"★ Puntuació: {stars} / 5")
+        print(f"★ Puntuació: {stars} / 5  ({raw:.2f} abans d'arrodonir)")

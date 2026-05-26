@@ -30,13 +30,33 @@ from pathlib import Path
 
 import graph_tool.all as gt  # type: ignore[import-untyped]
 
-from logic import possible_moves, apply_move, is_goal
-from puzzle import Puzzle, State
+from logic import DELTAS, is_goal
+from puzzle import Puzzle, State, StateKey, Coord
 
-StateKey = tuple[tuple[int, int], ...]
+def _get_occupied(puzzle: Puzzle, state: State) -> set[Coord]:
+    occupied = set(puzzle.walls)
+    for i, (px, py) in enumerate(state.positions):
+        for dx, dy in puzzle.pieces[i].coords:
+            occupied.add((px + dx, py + dy))
+    return occupied
+
+def _can_move_local(
+    puzzle: Puzzle, state: State, piece_idx: int, direction: str,
+    occupied: set[Coord], relative_sets: list[set[Coord]]
+) -> bool:
+    ddx, ddy = DELTAS[direction]
+    px, py = state.positions[piece_idx]
+    rel_set = relative_sets[piece_idx]
+    for dx, dy in puzzle.pieces[piece_idx].coords:
+        nx, ny = px + dx + ddx, py + dy + ddy
+        if nx < 0 or nx >= puzzle.W or ny < 0 or ny >= puzzle.H:
+            return False
+        if (nx, ny) in occupied and (dx + ddx, dy + ddy) not in rel_set:
+            return False
+    return True
 
 
-def state_key(puzzle: Puzzle, state: State | str) -> StateKey:
+def state_key(state: State | str, groups: list[tuple[int, int]]) -> StateKey:
     """
     Retorna la clau canònica d'un estat.
 
@@ -53,13 +73,11 @@ def state_key(puzzle: Puzzle, state: State | str) -> StateKey:
         positions = list(state.positions)
 
     result: list[tuple[int, int]] = []
-    i = 0
-    while i < len(puzzle.pieces):
-        j = i + 1
-        while j < len(puzzle.pieces) and puzzle.pieces[j] == puzzle.pieces[i]:
-            j += 1
-        result.extend(sorted(positions[i:j]))
-        i = j
+    for i, j in groups:
+        if j - i > 1:
+            result.extend(sorted(positions[i:j]))
+        else:
+            result.append(positions[i])
 
     return tuple(result)
 
@@ -82,10 +100,20 @@ def build_graph(puzzle: Puzzle, max_nodes: int = 0) -> gt.Graph | None:
     is_start_prop = g.new_vertex_property("bool")
     is_goal_prop  = g.new_vertex_property("bool")
 
+    # Pre-calculem els grups de peces iguals per a l'estat canònic
+    groups: list[tuple[int, int]] = []
+    i = 0
+    while i < len(puzzle.pieces):
+        j = i + 1
+        while j < len(puzzle.pieces) and puzzle.pieces[j] == puzzle.pieces[i]:
+            j += 1
+        groups.append((i, j))
+        i = j
+
     # visited: StateKey → índex enter del vèrtex (O(1) per accés)
     visited: dict[StateKey, int] = {}
 
-    start_key = state_key(puzzle, puzzle.start)
+    start_key = state_key(puzzle.start, groups)
 
     # Creem el node inicial
     v0   = g.add_vertex()
@@ -95,6 +123,9 @@ def build_graph(puzzle: Puzzle, max_nodes: int = 0) -> gt.Graph | None:
     is_start_prop[v0]  = True
     is_goal_prop[v0]   = is_goal(puzzle, puzzle.start)
 
+    # Pre-calculem els sets de coordenades relatives per a can_move_local
+    relative_sets = [set(p.coords) for p in puzzle.pieces]
+
     # DFS: la pila guarda (estat, índex_src, clau_src) per evitar
     # recalcular state_key quan el traiem de la pila.
     stack: list[tuple[State, int, StateKey]] = [
@@ -102,30 +133,36 @@ def build_graph(puzzle: Puzzle, max_nodes: int = 0) -> gt.Graph | None:
     ]
 
     while stack:
-        current, src_idx, _ = stack.pop()
+        current, src_idx, src_key = stack.pop()
+        
+        # Mirem tots els moviments possibles
+        occupied = _get_occupied(puzzle, current)
+        for i in range(len(puzzle.pieces)):
+            for direction in ("N", "E", "S", "W"):
+                if _can_move_local(puzzle, current, i, direction, occupied, relative_sets):
+                    # Calculem el nou estat
+                    ddx, ddy = DELTAS[direction]
+                    px, py = current.positions[i]
+                    nxt_pos = (px + ddx, py + ddy)
+                    positions = list(current.positions)
+                    positions[i] = nxt_pos
+                    nxt_state = State(tuple(positions))
+                    nxt_key   = state_key(nxt_state, groups)
 
-        if max_nodes > 0 and g.num_vertices() > max_nodes:
-            return None
+                    if nxt_key in visited:
+                        dst_idx = visited[nxt_key]
+                    else:
+                        v = g.add_vertex()
+                        dst_idx = int(v)
+                        visited[nxt_key] = dst_idx
+                        state_prop[v]     = json.dumps([list(p) for p in nxt_key])
+                        is_goal_prop[v]   = is_goal(puzzle, nxt_state)
+                        stack.append((nxt_state, dst_idx, nxt_key))
 
-        for move in possible_moves(puzzle, current):
-            nxt     = apply_move(puzzle, current, move)
-            nxt_key = state_key(puzzle, nxt)
-
-            if nxt_key in visited:
-                dst_idx = visited[nxt_key]
-            else:
-                # Node nou: creem el vèrtex i les seves propietats
-                v       = g.add_vertex()
-                dst_idx = int(v)
-                visited[nxt_key]  = dst_idx
-                state_prop[v]     = json.dumps([list(p) for p in nxt_key])
-                is_start_prop[v]  = (nxt_key == start_key)
-                is_goal_prop[v]   = is_goal(puzzle, nxt)
-                stack.append((nxt, dst_idx, nxt_key))
-
-            # Afegim l'aresta exactament una vegada (sense duplicats)
-            if src_idx < dst_idx:
-                g.add_edge(src_idx, dst_idx)
+                    # Afegim l'aresta si no existeix (multigraf no, però sí arestes paral·leles?)
+                    # graph-tool permet arestes paral·leles per defecte.
+                    # Per Klotski, volem una aresta per cada moviment diferent.
+                    g.add_edge(src_idx, dst_idx)
 
     # Desem propietats al graf
     g.vp["state"]    = state_prop

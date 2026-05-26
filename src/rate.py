@@ -103,9 +103,14 @@ def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | No
 
 
 def send_rating(puzzle_id: str, stars: int, token: str) -> None:
-    """Envia una valoració (enter 0-5) al repositori via POST."""
-    url  = f"{BASE_URL}/puzzles/{puzzle_id}/votes"   # endpoint correcte
-    body = json.dumps({"rating": stars}).encode()
+    """Envia una valoració (real 0.0-5.0) al repositori via POST."""
+    url  = f"{BASE_URL}/puzzles/{puzzle_id}/stars"
+    # El README diu que cal incloure l'ID, el token i la valoració.
+    # El token va al header Authorization.
+    body = json.dumps({
+        "id": puzzle_id,
+        "rating": float(stars)
+    }).encode()
     request = urllib.request.Request(
         url,
         data    = body,
@@ -140,7 +145,7 @@ def rate_one(
     puzzle, g = result
 
     try:
-        stars = evaluate(puzzle, g, verbose)
+        stars, _raw = evaluate(puzzle, g, verbose)
     except Exception as e:
         print(f"  [✗] {puzzle_id[:8]}: error avaluant ({e})", file=sys.stderr)
         return None

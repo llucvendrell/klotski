@@ -1,8 +1,11 @@
 """
-Tipus per a trencaclosques de peces lliscants (sliding block puzzles).
+Definició dels elements bàsics del joc: peces, estats i trencaclosques.
 
-Implementa els tipus Piece, State i Puzzle,
-amb l'ordenació canònica i la conversió a JSON definides a l'especificació.
+Un puzzle d'aquest tipus té una alçada (H) i una amplada (W).
+Conté un conjunt de peces, cadascuna amb una forma (poliominó)
+i una posició inicial. També pot tenir parets (walls) que són
+cel·les que cap peça pot ocupar. L'objectiu és situar certes
+peces en posicions concretes (goals).
 """
 
 from __future__ import annotations
@@ -10,23 +13,22 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Mapping
 
-# Una coordenada és una parella (x, y) de naturals (inclòs el 0).
-# (0, 0) és la cantonada esquerra a dalt.
-# L'ordenació és la de la tupla (x, y): primer per x, després per y.
+
+# Tipus de dades per a coordenades: (x, y)
 Coord = tuple[int, int]
+
+# Tipus de dades per a la clau de l'estat (canonicalització)
+StateKey = tuple[Coord, ...]
 
 
 @dataclass(frozen=True, order=True)
 class Piece:
     """
-    Una peça és una llista de coordenades relatives a (0, 0),
-    ordenades lexicogràficament i sense repeticions.
-
-    La peça ha d'estar normalitzada: almenys una coordenada té x=0
-    i almenys una té y=0 (la peça està el més a l'esquerra i amunt possible).
-
-    L'ordre entre peces és l'ordre lexicogràfic de les seves seqüències
+    Una peça es defineix com un poliominó: un conjunt de coordenades relatives.
+    Per convicció, s'ordenen i es normalitzen perquè el mínim de x i y sigui 0.
+    Aquest objecte és immutable (frozen), cosa que permet usar-lo com a clau
     de coordenades.
     """
 
@@ -58,114 +60,70 @@ class Piece:
         norm = sorted(set((x - min_x, y - min_y) for x, y in coords))
         return Piece(*norm)
 
-    def _to_obj(self) -> list[list[int]]:
-        return [list(c) for c in self.coords]
-
-    def to_json(self) -> str:
-        """Retorna la representació JSON de la peça (llista de coordenades)."""
-        return json.dumps(self._to_obj())
-
 
 @dataclass(frozen=True)
 class State:
     """
-    Una configuració del trencaclosques: una posició per peça,
-    en el mateix ordre que les peces del puzzle.
+    Representa una disposició de les peces en el taulell.
+    Guardem les posicions (x, y) de cada peça en l'ordre en què
+    estan definides al puzzle.
     """
 
     positions: tuple[Coord, ...]
 
-    def _to_obj(self) -> list[list[int]]:
-        return [list(p) for p in self.positions]
 
-    def to_json(self) -> str:
-        """Retorna la llista de posicions en JSON."""
-        return json.dumps(self._to_obj())
-
-
-@dataclass(frozen=True)
 class Puzzle:
     """
-    Un trencaclosques: dimensions del taulell, parets, peces (formes),
-    estat inicial i objectius.
-
-    Les peces estan en ordre canònic: ordenades per (forma, posició_inicial).
-    Les parets estan ordenades per coordenada.
-    Els objectius estan ordenats per (índex_peça, posició).
+    Defineix un trencaclosques complet.
     """
 
-    W: int
-    H: int
-    walls: tuple[Coord, ...]
-    pieces: tuple[Piece, ...]
-    start: State
-    goals: tuple[tuple[int, Coord], ...]
+    def __init__(
+        self,
+        W: int,
+        H: int,
+        pieces: tuple[Piece, ...],
+        start: State,
+        goals: Mapping[int, Coord],
+        walls: tuple[Coord, ...] = (),
+    ) -> None:
+        self.W = W
+        self.H = H
+        self.pieces = pieces
+        self.start = start
+        self.goals = goals
+        self.walls = walls
 
-    def __post_init__(self) -> None:
-        if self.W <= 0 or self.H <= 0:
-            raise ValueError("W i H han de ser positius")
-        # Parets ordenades i sense duplicats
-        if self.walls != tuple(sorted(set(self.walls))):
-            raise ValueError("Les parets no estan en ordre canònic o tenen duplicats")
-        for x, y in self.walls:
-            if x < 0 or x >= self.W or y < 0 or y >= self.H:
-                raise ValueError(f"Paret fora del taulell: ({x}, {y})")
-        # Nombre de posicions coincideix amb nombre de peces
-        if len(self.start.positions) != len(self.pieces):
-            raise ValueError(
-                "El nombre de posicions no coincideix amb el nombre de peces"
-            )
+        # Validacions bàsiques
+        if len(self.pieces) != len(self.start.positions):
+            raise ValueError("El número de peces i posicions inicials no coincideix")
+
         # Peces en ordre canònic: (forma, posició_inicial)
         pairs = list(zip(self.pieces, self.start.positions))
         if pairs != sorted(pairs):
             raise ValueError("Les peces no estan en ordre canònic")
-        # Objectius ordenats
-        if self.goals != tuple(sorted(self.goals)):
-            raise ValueError("Els objectius no estan en ordre canònic")
-        # Índexs dels objectius vàlids
-        n = len(self.pieces)
-        for i, pos in self.goals:
-            if i < 0 or i >= n:
-                raise ValueError(f"Índex de peça invàlid: {i}")
-        # Les peces no es poden solapar en l'estat inicial
-        occupied: set[Coord] = set()
-        for piece, (px, py) in zip(self.pieces, self.start.positions):
-            cells = {(px + dx, py + dy) for dx, dy in piece.coords}
-            if occupied & cells:
-                raise ValueError("Les peces es solapen en l'estat inicial")
-            occupied |= cells
 
-    def _to_obj(self) -> dict:
-        return {
+    def to_json(self, indent: int | None = None) -> str:
+        """Serialitza el puzzle a format JSON canònic."""
+        obj = {
             "W": self.W,
             "H": self.H,
             "walls": [list(c) for c in self.walls],
-            "pieces": [p._to_obj() for p in self.pieces],
-            "start": self.start._to_obj(),
-            "goals": [{"i": i, "pos": list(pos)} for i, pos in self.goals],
+            "pieces": [[list(c) for c in p.coords] for p in self.pieces],
+            "start": [list(c) for c in self.start.positions],
+            "goals": [{"i": i, "pos": list(p)} for i, p in self.goals.items()],
         }
+        return json.dumps(obj, indent=indent, separators=(",", ":"), sort_keys=True)
 
-    def to_json(self, indent: int | None = None) -> str:
-        """Retorna el JSON del trencaclosques."""
-        return json.dumps(self._to_obj(), indent=indent)
+    @staticmethod
+    def from_json(data: str) -> Puzzle:
+        """Crea un puzzle a partir d'un string JSON."""
+        obj = json.loads(data)
+        pieces = tuple(Piece(*[tuple(c) for c in coords]) for coords in obj["pieces"])
+        start = State(tuple((c[0], c[1]) for c in obj["start"]))
+        goals = {g["i"]: (g["pos"][0], g["pos"][1]) for g in obj["goals"]}
+        walls = tuple((c[0], c[1]) for c in obj["walls"])
+        return Puzzle(obj["W"], obj["H"], pieces, start, goals, walls)
 
     def hash(self) -> str:
-        """Retorna el hash SHA256 en hexadecimal del JSON sense indentació."""
+        """Retorna un hash SHA-256 únic per a aquest puzzle."""
         return hashlib.sha256(self.to_json().encode()).hexdigest()
-
-    @classmethod
-    def from_json(cls, s: str) -> Puzzle:
-        """Crea un Puzzle a partir d'un string JSON."""
-        obj = json.loads(s)
-        walls = tuple(tuple(c) for c in obj["walls"])
-        pieces = tuple(Piece(*[tuple(c) for c in coords]) for coords in obj["pieces"])
-        start = State(tuple(tuple(p) for p in obj["start"]))
-        goals = tuple((g["i"], tuple(g["pos"])) for g in obj["goals"])
-        return cls(
-            W=obj["W"],
-            H=obj["H"],
-            walls=walls,
-            pieces=pieces,
-            start=start,
-            goals=goals,
-        )

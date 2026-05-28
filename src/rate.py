@@ -1,24 +1,12 @@
 """
-Envia la valoració d'un puzzle al repositori compartit.
-
-Usa eval.py propi: evaluate(puzzle, g, verbose).
-Prioritza .graphml si existeix (més ràpid); si no, construeix el graf.
-
-El token d'autenticació es llegeix de la variable d'entorn KLOTSKI_TOKEN
-o d'un fitxer .token al directori arrel del projecte.
-
-Ús:
-    python src/rate.py <id>               # avalua i envia la valoració
-    python src/rate.py <id> --dry-run     # avalua però no envia
-    python src/rate.py <id> --verbose     # mostra detall de les mesures
-    python src/rate.py --all              # avalua i envia tots els puzzles
+Envia la valoració d'un o tots els puzzles al repositori compartit calculant-la directament.
+Usa eval.py propi (evaloptimitzatbo.py) i el teu token fix correcte.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import urllib.error
 import urllib.request
@@ -27,208 +15,161 @@ from pathlib import Path
 import graph_tool.all as gt  # type: ignore[import-untyped]
 
 from evaloptimitzatbo import evaluate
-from graph_eficientcopybo import build_graph
 from puzzle import Puzzle
 
-BASE_URL    = "https://klotski.pauek.dev/api"
+BASE_URL    = "https://klotski.pauek.dev"
 PUZZLES_DIR = Path("puzzles")
-TOKEN_FILE  = Path(".token")
+TOKEN       = "019d90b1-6aaf-7000-9d26-6103afa10285"  # El teu token correcte
 
 
-# ── Token ─────────────────────────────────────────────────────────────────────
+def load_puzzle_and_graph(puzzle_id: str) -> tuple[str, Puzzle, gt.Graph | None] | None:
+    """Troba el fitxer i extreu l'ID exactament com ho fa el codi d'ells."""
+    candidates: list[tuple[Path, str]] = []
+    for p in PUZZLES_DIR.glob(f"*{puzzle_id}*"):
+        if p.suffix == ".graphml":
+            candidates.append((p, "graphml"))
+        elif p.suffix == ".json":
+            candidates.append((p, "json"))
 
-
-def load_token() -> str:
-    """
-    Carrega el token d'autenticació.
-
-    Ordre de prioritat:
-      1. Variable d'entorn KLOTSKI_TOKEN
-      2. Fitxer .token al directori arrel del projecte
-    """
-    token = os.environ.get("KLOTSKI_TOKEN")
-    if token:
-        return token.strip()
-    if TOKEN_FILE.exists():
-        return TOKEN_FILE.read_text().strip()
-    print(
-        "Error: no s'ha trobat el token d'autenticació.\n"
-        "Opcions:\n"
-        "  1. Crea un fitxer .token amb el teu token\n"
-        "  2. Exporta la variable: export KLOTSKI_TOKEN=el_teu_token",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-# ── Càrrega del puzzle i el graf ─────────────────────────────────────────────
-
-
-def load_puzzle_and_graph(puzzle_id: str) -> tuple[Puzzle, gt.Graph | None] | None:
-    """
-    Carrega el puzzle i opcionalment el graf a partir de l'ID.
-
-    Prioritza el .graphml si existeix: en aquest cas retorna el graf ja
-    construït i evaluate no l'ha de reconstruir. Si només hi ha .json,
-    retorna el graf com a None i evaluate el construirà internament.
-    """
-    candidates: list[tuple[Path, str]] = [
-        (PUZZLES_DIR / f"{puzzle_id[:8]}.graphml", "graphml"),
-        (PUZZLES_DIR / f"{puzzle_id}.graphml",     "graphml"),
-        (PUZZLES_DIR / f"{puzzle_id[:8]}.json",    "json"),
-        (PUZZLES_DIR / f"{puzzle_id}.json",         "json"),
-    ]
+    candidates.sort(key=lambda x: (x[1] != "graphml",))
 
     for path, fmt in candidates:
-        if not path.exists():
-            continue
+        full_id = path.stem.split("_")[-1]
+
         if fmt == "graphml":
-            print(f"  Carregant graf '{path.name}'...")
+            print(f"\n[+] Carregant graf precalculat '{path.name}'...")
             g = gt.load_graph(str(path))
             puzzle = Puzzle.from_json(g.gp["puzzle"])
-            return puzzle, g
+            return full_id, puzzle, g
         else:
+            print(f"\n[+] Carregant puzzle JSON '{path.name}'...")
             puzzle = Puzzle.from_json(path.read_text())
-            return puzzle, None  # evaluate construirà el graf
+            return full_id, puzzle, None
 
-    print(
-        f"  [✗] {puzzle_id[:8]}: fitxer no trobat a '{PUZZLES_DIR}/'.\n"
-        f"      Executa primer: python src/download.py {puzzle_id}",
-        file=sys.stderr,
-    )
+    print(f"  [✗] Error: No s'ha trobat cap fitxer per a '{puzzle_id}'.", file=sys.stderr)
     return None
 
 
-# ── Comunicació amb el servidor ───────────────────────────────────────────────
-
-
-def send_rating(puzzle_id: str, stars: int, token: str) -> None:
-    """Envia una valoració (real 0.0-5.0) al repositori via POST."""
-    url  = f"{BASE_URL}/puzzles/{puzzle_id}/stars"
-    # El README diu que cal incloure l'ID, el token i la valoració.
-    # El token va al header Authorization.
-    body = json.dumps({
-        "id": puzzle_id,
-        "rating": float(stars)
-    }).encode()
+def send_rating(puzzle_id: str, stars: float, token: str) -> None:
+    """Envia el vot recreant el comportament d'èxit del curl amb l'ID de 64 caràcters."""
+    full_id = str(puzzle_id).strip()
+    url = f"{BASE_URL}/api/puzzles/{full_id}/votes"
+    
+    stars_int = int(round(stars))
+    payload = f'{{"stars": {stars_int}}}'
+    body = payload.encode("utf-8")
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token.strip()}"
+    }
+    
     request = urllib.request.Request(
         url,
-        data    = body,
-        method  = "POST",
-        headers = {
-            "Content-Type" : "application/json",
-            "Authorization": f"Bearer {token}",
-        },
+        data=body,
+        headers=headers,
+        method="POST"
     )
+    
     with urllib.request.urlopen(request) as response:
         response.read()
 
 
-# ── Lògica d'alt nivell ───────────────────────────────────────────────────────
-
-
-def rate_one(
-    puzzle_id: str,
-    token: str,
-    *,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> int | None:
-    """
-    Avalua un puzzle i envia la valoració al servidor.
-    Retorna la puntuació (enter 0-5) o None si hi ha hagut un error.
-    """
+def rate_one(puzzle_id: str, token: str, *, dry_run: bool = False, verbose: bool = False) -> bool:
+    """Executa l'avaluació en temps real i envia el resultat."""
     result = load_puzzle_and_graph(puzzle_id)
     if result is None:
-        return None
+        return False
 
-    puzzle, g = result
+    full_id, puzzle, g = result
 
     try:
-        stars, _raw = evaluate(puzzle, g, verbose)
+        stars, raw_score = evaluate(puzzle, g, verbose)
     except Exception as e:
-        print(f"  [✗] {puzzle_id[:8]}: error avaluant ({e})", file=sys.stderr)
-        return None
-
-    print(f"  [★] {puzzle_id[:8]}: {stars} / 5", end="")
+        print(f"  [✗] Error en avaluar el puzzle ({e})", file=sys.stderr)
+        return False
 
     if dry_run:
-        print("  (dry-run, no s'ha enviat)")
-        return stars
+        print(f"  [★] {full_id[:8]}: {stars} / 5 (Bruta: {raw_score:.2f}) -> Mode dry-run.")
+        return True
 
     try:
-        send_rating(puzzle_id, stars, token)
-        print("  → enviat")
+        send_rating(full_id, stars, token)
+        print(f"  [✓] Enviada correctament la valoració de {stars} estrelles per al puzzle '{full_id[:8]}'.")
+        return True
     except urllib.error.HTTPError as e:
-        print(f"\n  [✗] Error HTTP {e.code} en enviar la valoració", file=sys.stderr)
-        return None
-    except urllib.error.URLError as e:
-        print(f"\n  [✗] Error de connexió: {e.reason}", file=sys.stderr)
-        return None
-
-    return stars
+        print(f"  [! ] Error HTTP {e.code} enviant la valoració al servidor.", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"  [! ] Error en la connexió: {e}", file=sys.stderr)
+        return False
 
 
-def rate_all(
-    token: str,
-    *,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> None:
-    """Avalua i envia la valoració de tots els puzzles descarregats."""
-    ids = sorted({
-        p.stem for p in PUZZLES_DIR.glob("*")
-        if p.suffix in (".json", ".graphml")
-    })
-    if not ids:
-        print(f"No s'ha trobat cap puzzle a '{PUZZLES_DIR}/'.")
-        return
-
-    print(f"Avaluant {len(ids)} puzzle(s)...\n")
-    ok, failed = 0, 0
-
-    for i, puzzle_id in enumerate(ids, start=1):
-        print(f"[{i:3}/{len(ids)}]", end=" ")
-        result = rate_one(puzzle_id, token, dry_run=dry_run, verbose=verbose)
-        if result is not None:
-            ok += 1
-        else:
-            failed += 1
-
-    print(f"\nEnviats: {ok}  |  Fallits: {failed}")
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ── Modificació del CLI per admetre --all o ID individual ─────────────────────
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Avalua i envia la valoració d'un puzzle (usa eval.py propi)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Exemples:
-  python src/rate.py abc12345              # avalua i envia
-  python src/rate.py abc12345 --dry-run    # avalua sense enviar
-  python src/rate.py abc12345 --verbose    # mostra detall de les mesures
-  python src/rate.py --all                 # envia tots els descarregats
-        """,
-    )
-    parser.add_argument("id", nargs="?", metavar="ID", help="Identificador del puzzle")
-    parser.add_argument("--all", action="store_true", help="Avalua tots els puzzles descarregats")
-    parser.add_argument("--dry-run", action="store_true", help="Avalua però no envia")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Mostra detall de les mesures")
+    parser = argparse.ArgumentParser(description="Avalua en viu i envia la valoració d'un o tots els puzzles")
+    parser.add_argument("id", metavar="ID", nargs="?", default=None, help="Identificador del puzzle individual")
+    parser.add_argument("--all", action="store_true", help="Avalua i envia TOTS els puzzles de la carpeta")
+    parser.add_argument("--dry-run", action="store_true", help="Avalua localment sense enviar")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Mostra l'informe complet de mètriques")
     args = parser.parse_args()
 
-    if not args.id and not args.all:
-        parser.print_help()
-        sys.exit(1)
-
-    token = load_token()
+    if not args.all and args.id is None:
+        parser.error("Has d'especificar l'ID d'un puzzle o fer servir l'argument --all")
 
     if args.all:
-        rate_all(token, dry_run=args.dry_run, verbose=args.verbose)
+        vistos = set()
+        extensions_valides = {".json", ".graphml"}
+        
+        puzzles_a_processar = []
+        for p in PUZZLES_DIR.glob("*"):
+            if p.suffix in extensions_valides:
+                full_id = p.stem.split("_")[-1]
+                if full_id not in vistos:
+                    vistos.add(full_id)
+                    puzzles_a_processar.append(full_id)
+
+        if not puzzles_a_processar:
+            print(f"No s'ha trobat cap puzzle vàlid a la carpeta '{PUZZLES_DIR}/'.")
+            sys.exit(0)
+
+        total_puzzles = len(puzzles_a_processar)
+        print(f"S'han trobat {total_puzzles} puzzles únics a processar.")
+        
+        exits = 0
+        ultim_id_enviat = "Cap de moment"
+
+        # Protegim el bucle amb un try-except general per si s'atura el programa a la meitat
+        try:
+            for i, p_id in enumerate(puzzles_a_processar, 1):
+                print(f"\n--- [Puzzle {i}/{total_puzzles}] ---")
+                
+                # Executem la valoració
+                if rate_one(p_id, TOKEN, dry_run=args.dry_run, verbose=args.verbose):
+                    exits += 1
+                    ultim_id_enviat = p_id  # 🟢 El xivato guarda l'ID de l'últim que ha funcionat
+                
+                # XIVATO EN TEMPS REAL: Mostra el progrés actualitzat després de cada puzzle
+                print(f"  [📢 XIVATO] Estat actual: {exits} enviats correctament. Últim amb èxit: {ultim_id_enviat[:8]}")
+
+        except KeyboardInterrupt:
+            # Si prems Ctrl + C a la terminal, l'script es para ordenadament i et avisa
+            print(f"\n\n🛑 PROGRES INTERROMPUT PER L'USUARI (Ctrl + C)")
+            print(f"────────────────────────────────────────────────────")
+            print(f"  Total enviats abans d'aturar: {exits} / {total_puzzles}")
+            print(f"  👉 L'ÚLTIM PUZZLE ENVIAT AMB ÈXIT HA ESTAT: {ultim_id_enviat}")
+            print(f"────────────────────────────────────────────────────")
+            sys.exit(0)
+            
+        print(f"\n====================================================")
+        print(f" 🏁 Procés completat al 100%!")
+        print(f" Total global: {exits}/{total_puzzles} vots enviats correctament.")
+        print(f"====================================================")
+
     else:
         print(f"Avaluant '{args.id[:8]}'...")
-        result = rate_one(args.id, token, dry_run=args.dry_run, verbose=args.verbose)
-        if result is None:
+        success = rate_one(args.id, TOKEN, dry_run=args.dry_run, verbose=args.verbose)
+        if not success:
             sys.exit(1)

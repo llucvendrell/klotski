@@ -12,6 +12,8 @@ Principis de disseny:
     M2 · Complexitat del graf         — log(nodes × arestes/nodes)
     M3 · Varietat de graus al camí    — coeficient de variació
     M4 · Ratio goals/nodes invertit   — pocs goals = difícil encertar
+    M5 · Ratio de nodes sense sortida - 20% de dead-ends és un valor molt bo
+    M6 · Punts de pas obligat (corredors) - 10% i 30% del camí
 
   Penalitzacions:
     P1 · Camí massa curt              — <10 moviments
@@ -186,7 +188,7 @@ def measure_bottlenecks(degree_array: np.ndarray, path_indices: list[int]) -> fl
     return math.exp(-15.0 * (ratio - 0.2) ** 2)
 
 
-# ── Penalitzacions ────────────────────────────────────────────────────────────
+# ── Penalitzacions
 
 
 def penalty_short_path(path_len: int) -> float:
@@ -214,7 +216,7 @@ def penalty_too_many_goals(n_goals: int, n_nodes: int) -> float:
     return MAX_PENALTY_GOALS * min(excess, 1.0)
 
 
-# ── Escala final ──────────────────────────────────────────────────────────────
+# ── Escala final 
 
 
 def strict_scale(score: float) -> float:
@@ -226,7 +228,7 @@ def strict_scale(score: float) -> float:
     return score
 
 
-# ── Avaluació global ──────────────────────────────────────────────────────────
+# ── Avaluació global 
 
 
 def evaluate(
@@ -275,12 +277,12 @@ def evaluate(
     n_edges  = g.num_edges()
     state_prop    = g.vp["state"]
 
-    # ── Arrays numpy d'una passada ────────────────────────────────────
+    # ── Arrays numpy d'una passada
     n_goals      = int(is_goal_prop.a.sum())
     degree_prop  = g.degree_property_map("out")
     degree_array = degree_prop.a.copy()
 
-    # ── Sis mesures ──────────────────────────────────────────────────
+    # ── Sis mesures
     m_path    = measure_path_length(path_len)
     m_complex = measure_complexity(n_nodes, n_edges)
     m_variety = measure_path_variety(degree_array, path_indices)

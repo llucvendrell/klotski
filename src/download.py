@@ -37,7 +37,7 @@ def get_puzzle(puzzle_id: str) -> dict:
 def save_puzzle(puzzle_id: str, puzzle: dict) -> Path:
     """Desa un puzzle com a fitxer .json a la carpeta puzzles/."""
     PUZZLES_DIR.mkdir(exist_ok=True)
-    path = PUZZLES_DIR / f"{puzzle_id[:8]}.json"
+    path = PUZZLES_DIR / f"{puzzle_id}.json"
     path.write_text(json.dumps(puzzle))
     return path
  

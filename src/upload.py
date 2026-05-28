@@ -24,7 +24,7 @@ from puzzle import Puzzle
 
 BASE_URL    = "https://klotski.pauek.dev/api"
 TOKEN_FILE  = Path(".token")
-PUZZLES_DIR = Path("puzzles")
+PUZZLES_DIR = Path("generats")
 
 
 # ── Token ─────────────────────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ Exemples:
     )
     parser.add_argument(
         "--all", action="store_true",
-        help="Puja tots els puzzles .json de la carpeta puzzles/",
+        help="Puja tots els puzzles .json de la carpeta generats/",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",

@@ -48,10 +48,10 @@ BFS_NODE_LIMIT = 3_000_000
 
 DEFAULT_MIN_STARS = 4.3
 DEFAULT_MAX_STARS = 5.0
-DEFAULT_OUTPUT    = Path("puzzles")
+DEFAULT_OUTPUT    = Path("generats")
 
 
-# ── Lògica de moviments ───────────────────────────────────────────────────────
+# ── Lògica de moviments 
 
 
 def get_moves(
@@ -84,7 +84,7 @@ def get_moves(
     return moves
 
 
-# ── BFS invers ────────────────────────────────────────────────────────────────
+# ── BFS invers 
 
 
 # Distància mínima necessària per a cada llindar d'estrelles.
@@ -161,11 +161,11 @@ def inverse_bfs(
         if target_group and goal_pos in k[target_group[0]:target_group[1]]:
             goal_keys.append(k)
     
-    # BFS multi-source
-    # Per anar ràpid sense guardar tot el graf, podem usar el 'visited' de la 
-    # primera passada per saber quins estats existeixen, però necessitem
-    # les arestes. Per sort, Klotski és reversible.
-    # Re-explorem des dels goals:
+    '''BFS multi-source
+     Per anar ràpid sense guardar tot el graf, podem usar el 'visited' de la 
+     primera passada per saber quins estats existeixen, però necessitem
+     les arestes. Per sort, Klotski és reversible.
+     Re-explorem des dels goals:'''
     
     true_dists: dict[tuple, int] = {k: 0 for k in goal_keys}
     q_multi = deque(goal_keys)
@@ -223,7 +223,7 @@ def inverse_bfs(
     n_dead = sum(1 for d in out_degrees.values() if d == 1)
     # Bottlenecks: nodes al camí amb grau 2
     n_bottles = sum(1 for d in path_degrees if d == 2)
-    # El BFS actual ja troba tots els estats. Simplement re-analitzarem les distàncies.
+   
     
     return {
         "start_state" : best_state_positions,
@@ -295,7 +295,7 @@ def evaluate_stats(stats: dict) -> float:
     return max(0.0, score) * 5.0
 
 
-# ── Col·locació de peces ──────────────────────────────────────────────────────
+# ── Col·locació de peces 
 
 
 def place_pieces(
@@ -347,7 +347,7 @@ def place_pieces(
     return pieces, positions, walls
 
 
-# ── Desat canònic ─────────────────────────────────────────────────────────────
+# ── Desat canònic 
 
 
 def build_puzzle_json(
@@ -367,7 +367,6 @@ def build_puzzle_json(
     """
     from puzzle import Puzzle as _Puzzle
 
-    # Ordenem coordenades de cada peça (Puzzle.from_json ho exigeix)
     pieces_normalized = [sorted(coords) for coords in pieces]
 
     # Ordenem peces per (forma, posició) — ordre canònic
@@ -396,8 +395,6 @@ def build_puzzle_json(
     except Exception:
         return None
 
-    # Validem que l'estat inicial NO és ja un estat final
-    # (si ho fos, el camí mínim seria 0 i eval donaria 0★)
     from logic import is_goal as _is_goal
     if _is_goal(p, p.start):
         return None
@@ -430,7 +427,7 @@ def save_puzzle(
     return path
 
 
-# ── Pipeline principal ────────────────────────────────────────────────────────
+# ── Pipeline principal 
 
 
 def run(min_stars: float, max_stars: float, n: int, output_dir: Path) -> None:
@@ -480,7 +477,6 @@ def run(min_stars: float, max_stars: float, n: int, output_dir: Path) -> None:
 
             stars = evaluate_stats(stats)
 
-            # Puzzle dades
             puzzle_info = dict(
                 W=W, H=H, pieces=pieces, walls=walls,
                 start_state=stats["start_state"],
@@ -556,7 +552,7 @@ def run(min_stars: float, max_stars: float, n: int, output_dir: Path) -> None:
     print(f"\nFet! {saved} puzzle(s) en {attempts} intents.")
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+# ── CLI 
 
 
 if __name__ == "__main__":
